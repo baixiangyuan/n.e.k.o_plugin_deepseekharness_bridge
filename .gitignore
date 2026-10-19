@@ -21,6 +21,11 @@ store.db
 uv.lock
 
 # 编辑器
-.vscode/
 .idea/
 .DS_Store
+
+# .vscode/ 的 settings.json 和 tasks.json 是市场 release check 的必填文件，
+# 必须提交；只忽略编辑器自己产生的本地状态。
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
