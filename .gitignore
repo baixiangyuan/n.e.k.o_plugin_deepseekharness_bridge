@@ -14,6 +14,9 @@ dist/
 build/
 *.egg-info/
 
+# 插件运行时可能生成的本地状态
+store.db
+
 # 本插件零第三方依赖，lock 文件只会带来噪音，不提交。
 uv.lock
 
