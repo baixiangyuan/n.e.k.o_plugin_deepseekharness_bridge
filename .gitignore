@@ -1,0 +1,23 @@
+# 本地运行配置（含可能的本地路径），不要提交。
+config.toml
+
+# 插件自带的第三方依赖，由 `neko-plugin sync` 生成。
+# 本插件零第三方依赖，正常情况下这个目录不存在。
+vendor/
+
+# 测试与构建产物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# 本插件零第三方依赖，lock 文件只会带来噪音，不提交。
+uv.lock
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store

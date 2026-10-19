@@ -1,0 +1,27 @@
+# dsh_bridge 运行配置示例。
+#
+# 复制为 config.toml 后按需修改；运行时的实际配置以 N.E.K.O. 的
+# 配置合并结果为准，这里的值是 [dsh_bridge] 段的默认值。
+
+[dsh_bridge]
+# DeepSeek Harness 源码检出路径。留空则从 PATH 找 `dsh`。
+# 注意：SDK 路径会把它当作隔离 home 的根，请确保该目录可写。
+repo_path = ""
+
+# 显式指定 `dsh` 可执行文件。留空表示从 PATH 查找。
+dsh_executable = ""
+
+# harness 的工作目录。留空则用插件存储目录下的 workspace/。
+workspace = ""
+
+# 传给 `dsh` 的 profile。
+profile = "sdk-minimal"
+
+# 每次运行使用的模型 ID。
+model = "deepseek-v4-flash"
+
+# 单次任务超时（秒）。harness 任务天生较长，默认给得比较宽。
+task_timeout = 600
+
+# 运行日志目录。留空则用 storage_dir/runs。
+log_dir = ""
