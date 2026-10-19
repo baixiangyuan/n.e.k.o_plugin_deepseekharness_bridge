@@ -12,6 +12,7 @@ visible rather than silent.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 import shutil
 import sys
@@ -20,14 +21,14 @@ from pathlib import Path
 from typing import Any
 
 from plugin.sdk.plugin import (
-    Ok,
     Err,
-    SdkError,
     NekoPluginBase,
-    neko_plugin,
-    plugin_entry,
+    Ok,
+    SdkError,
     lifecycle,
     llm_tool,
+    neko_plugin,
+    plugin_entry,
 )
 
 # DeepSeek Harness 支持的常见模型；UI 只展示其中一部分，这里供校验提示使用。
@@ -118,12 +119,17 @@ class DshBridgePlugin(NekoPluginBase):
     # --- harness resolution -------------------------------------------
 
     def _probe_sdk(self) -> bool:
-        """Whether the DeepSeek Harness Python SDK is importable here."""
+        """Whether the DeepSeek Harness Python SDK is installed here.
+
+        Uses ``find_spec`` rather than importing: probing should not execute
+        the SDK's import-time side effects, and the market's ruff config runs
+        with ``--ignore-noqa``, so an ``# noqa: F401`` on a probe import would
+        not suppress the unused-import warning.
+        """
         try:
-            import deepseek_harness  # noqa: F401
-        except Exception:
+            return importlib.util.find_spec("deepseek_harness") is not None
+        except (ImportError, ValueError):
             return False
-        return True
 
     def _resolve_dsh_executable(self) -> str | None:
         """Find a usable ``dsh`` command, preferring the configured repo checkout."""
