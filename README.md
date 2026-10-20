@@ -10,6 +10,18 @@
 | `run_task` | 执行一次 harness 任务，返回最终回复 |
 | `status` | 报告 SDK / CLI 可用性与历史运行记录 |
 | `dsh_run_task` | 上面 `run_task` 的 LLM 工具版本，供模型在对话中直接调用 |
+| `panel_refresh` / `panel_run_task` | 面板专用入口，由 `@ui.action` 暴露 |
+
+## 面板
+
+插件带一个 Hosted TSX 面板（`ui/panel.tsx`），在插件管理器里直接打开，包含：
+
+- **状态总览** — harness 是否就绪、累计运行次数、当前调用方式
+- **Harness 详情** — Python SDK 可用性、`dsh` 可执行文件、模型、profile、超时、工作目录
+- **运行任务** — 一个表单，直接把任务交给 harness，显示提交结果
+- **最近运行** — 最近 20 次运行的会话 ID、任务长度、耗时、调用方式、成败
+
+面板只回传元数据（会话 ID、长度、耗时、模式），不回传任务正文和模型回复。
 
 ## 运行方式
 

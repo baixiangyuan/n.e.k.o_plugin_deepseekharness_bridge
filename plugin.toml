@@ -21,6 +21,19 @@ auto_start = false
 timeout = 300
 startup_failure = "warn"
 
+[plugin.ui]
+enabled = true
+
+# 面板：harness 可用性、配置摘要、最近运行记录，以及一个任务执行表单。
+# 权限按最小必要给：state:read 读 @ui.context，action:call 调 @ui.action。
+# 不做配置编辑，所以不给 config:write。
+[[plugin.ui.panel]]
+id = "dashboard"
+title = "DeepSeek Harness 桥接"
+entry = "ui/panel.tsx"
+context = "dashboard"
+permissions = ["state:read", "action:call"]
+
 # Plugin-owned business settings. Typed on the Python side by DshSettings;
 # these are the runtime-config defaults the host merges over.
 [deepseekharness_bridge]

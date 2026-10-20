@@ -79,6 +79,16 @@ def test_entry_module_syntax_is_valid() -> None:
     ast.parse(source)
 
 
+def _decorator_name(deco: ast.expr) -> str | None:
+    """取装饰器名字，兼容 `@x`、`@x()`、`@mod.x`、`@mod.x()` 四种写法。"""
+    target = deco.func if isinstance(deco, ast.Call) else deco
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    return None
+
+
 def test_entries_are_async() -> None:
     """运行时触发的 @plugin_entry / @llm_tool 处理器必须是 async def。"""
     tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
@@ -89,14 +99,37 @@ def test_entries_are_async() -> None:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for deco in node.decorator_list:
-            name = deco.func.id if isinstance(deco, ast.Call) else getattr(deco, "id", None)
-            if name in decorated:
+            if _decorator_name(deco) in decorated:
                 checked += 1
                 assert isinstance(node, ast.AsyncFunctionDef), (
-                    f"{node.name} 用 @{name} 装饰但不是 async def"
+                    f"{node.name} 用 @{_decorator_name(deco)} 装饰但不是 async def"
                 )
 
     assert checked >= 3, "预期的入口数量没到，说明 AST 检查没生效"
+
+
+def test_ui_actions_are_backed_by_entries() -> None:
+    """每个 @ui.action 必须同时是 @plugin_entry，否则面板调不到它。"""
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+
+    action_only: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        names = {_decorator_name(deco) for deco in node.decorator_list}
+        if "action" in names and "plugin_entry" not in names:
+            action_only.append(node.name)
+
+    assert not action_only, f"这些函数只有 @ui.action 没有 @plugin_entry：{action_only}"
+
+
+def test_panel_entry_file_exists() -> None:
+    """manifest 里声明的 UI 入口文件必须真的存在，否则面板显示不可用。"""
+    manifest = _manifest()
+    for surface in manifest.get("plugin", {}).get("ui", {}).get("panel", []):
+        entry = surface.get("entry")
+        if entry:
+            assert (PLUGIN_DIR / entry).is_file(), f"UI 入口缺失：{entry}"
 
 
 def test_no_secrets_in_source() -> None:

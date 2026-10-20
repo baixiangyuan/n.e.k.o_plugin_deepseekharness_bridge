@@ -29,6 +29,7 @@ from plugin.sdk.plugin import (
     llm_tool,
     neko_plugin,
     plugin_entry,
+    ui,
 )
 
 # DeepSeek Harness 支持的常见模型；UI 只展示其中一部分，这里供校验提示使用。
@@ -82,8 +83,89 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         )
         return Ok({"status": "stopped", "runs": len(self._runs)})
 
-    # --- configuration -------------------------------------------------
+    # --- hosted UI -----------------------------------------------------
 
+    @ui.context(id="dashboard")
+    async def dashboard(self):
+        """面板状态：harness 可用性、当前配置摘要、最近运行记录。
+
+        只回传元数据（会话 ID、长度、耗时、模式），不回传任务正文或模型
+        回复——面板可能被围观，日志同理。
+        """
+        runs = [
+            {
+                "session_id": record["session_id"],
+                "task_chars": record["task_chars"],
+                "elapsed_seconds": record["elapsed_seconds"],
+                "mode": record["mode"],
+                "ok": record["ok"],
+            }
+            for record in list(self._runs.values())[-20:]
+        ]
+
+        return {
+            "harness": {
+                "sdk_available": self._sdk_available,
+                "dsh_executable": self._dsh_executable,
+                "ready": bool(self._sdk_available or self._dsh_executable),
+            },
+            "settings": {
+                "model": str(await self._cfg("model", _KNOWN_MODELS[0])),
+                "profile": str(await self._cfg("profile", "sdk-minimal")),
+                "task_timeout": float(await self._cfg("task_timeout", 600)),
+                "workspace": str(await self._workspace()),
+                "repo_path": str(await self._cfg("repo_path", "")),
+            },
+            "runs": runs,
+            "runs_total": len(self._runs),
+        }
+
+    @ui.action(refresh_context=True)
+    @plugin_entry(
+        id="panel_refresh",
+        name="刷新面板",
+        description="重新读取 harness 可用性与运行记录。",
+    )
+    async def panel_refresh(self, **_):
+        # 状态由 @ui.context 现取，这里只需要一个成功的信号让面板重渲染。
+        return Ok({"status": "refreshed"})
+
+    @ui.action(refresh_context=True)
+    @plugin_entry(
+        id="panel_run_task",
+        name="运行任务",
+        description="把任务交给本地 DeepSeek Harness 执行。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "要 harness 执行的任务，写清楚目标和验收标准",
+                }
+            },
+            "required": ["task"],
+        },
+        timeout=900.0,
+    )
+    async def panel_run_task(self, task: str, **_):
+        """面板专用入口：复用 run_task，但不把完整回复塞进面板状态。"""
+        if not task or not task.strip():
+            return Err(SdkError("任务不能为空"))
+
+        outcome = await self.run_task(task)
+        if isinstance(outcome, Err):
+            return outcome
+
+        payload = outcome.value
+        return Ok({
+            "ok": True,
+            "session_id": payload["session_id"],
+            "elapsed_seconds": payload["elapsed_seconds"],
+            "mode": payload["mode"],
+            "response_preview": payload["response"][:400],
+        })
+
+    # --- configuration -------------------------------------------------
     async def _cfg(self, key: str, default: Any = None) -> Any:
         """Read one dotted config value, tolerating an unreadable host config."""
         try:
