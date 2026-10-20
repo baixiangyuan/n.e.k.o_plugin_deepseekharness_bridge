@@ -1,14 +1,14 @@
-# DESIGN — dsh_bridge
+# DESIGN — deepseekharness_bridge
 
 ## 身份锁定
 
 | 表面 | 值 |
 | --- | --- |
-| 目录名 | `plugin/plugins/dsh_bridge/` |
-| `[plugin].id` | `dsh_bridge` |
+| 目录名 | `plugin/plugins/deepseekharness_bridge/` |
+| `[plugin].id` | `deepseekharness_bridge` |
 | `[plugin].name` | DeepSeek Harness 桥接 |
-| `[plugin].entry` | `plugin.plugins.dsh_bridge:DshBridgePlugin` |
-| 主类 | `DshBridgePlugin` |
+| `[plugin].entry` | `plugin.plugins.deepseekharness_bridge:DeepseekharnessBridgePlugin` |
+| 主类 | `DeepseekharnessBridgePlugin` |
 
 包类型 `plugin`（独立功能），不是 `extension`（无宿主），也不是 `adapter`
 （不桥接外部协议进来，而是主动调用本地 harness）。

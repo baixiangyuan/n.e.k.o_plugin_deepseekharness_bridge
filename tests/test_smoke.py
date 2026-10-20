@@ -1,4 +1,4 @@
-"""dsh_bridge 的冒烟测试。
+"""deepseekharness_bridge 的冒烟测试。
 
 这些测试刻意不依赖 N.E.K.O. 宿主或真实 harness：只验证插件自身的纯逻辑
 （manifest 契约、工具名、参数转换），因此可以在没有运行环境的机器上跑。
@@ -36,10 +36,10 @@ def test_plugin_dir_resolves() -> None:
 def test_manifest_required_fields() -> None:
     plugin = _manifest()["plugin"]
 
-    assert plugin["id"] == "dsh_bridge"
+    assert plugin["id"] == "deepseekharness_bridge"
     assert plugin["name"]
     assert plugin["version"]
-    assert plugin["entry"].startswith("plugin.plugins.dsh_bridge:")
+    assert plugin["entry"].startswith("plugin.plugins.deepseekharness_bridge:")
 
 
 def test_folder_name_matches_plugin_id() -> None:

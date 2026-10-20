@@ -9,7 +9,7 @@ requires-python = ">=3.10"
 dependencies = []
 
 [tool.neko_plugin]
-id = "dsh_bridge"
+id = "deepseekharness_bridge"
 
 [tool.pytest.ini_options]
 # 只收集 tests/。插件根目录的 __init__.py 是 N.E.K.O. 入口模块，导入

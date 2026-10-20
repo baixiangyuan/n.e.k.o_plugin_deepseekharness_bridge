@@ -23,7 +23,7 @@
       "label": "check",
       "detail": "Run the pre-release check from the N.E.K.O. source tree.",
       "type": "shell",
-      "command": "uv run python -m plugin.neko_plugin_cli.cli check -r dsh_bridge",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli check -r deepseekharness_bridge",
       "problemMatcher": []
     }
   ]

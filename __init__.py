@@ -48,7 +48,7 @@ def _truncate(text: str, limit: int = 6000) -> str:
 
 
 @neko_plugin
-class DshBridgePlugin(NekoPluginBase):
+class DeepseekharnessBridgePlugin(NekoPluginBase):
     """Expose a local DeepSeek Harness to N.E.K.O. as LLM tools."""
 
     def __init__(self, ctx: Any):
@@ -67,7 +67,7 @@ class DshBridgePlugin(NekoPluginBase):
         self._sdk_available = self._probe_sdk()
         self._dsh_executable = self._resolve_dsh_executable()
         self.logger.info(
-            "dsh_bridge ready (sdk=%s, dsh=%s)",
+            "deepseekharness_bridge ready (sdk=%s, dsh=%s)",
             "available" if self._sdk_available else "missing",
             self._dsh_executable or "not found",
         )
@@ -78,7 +78,7 @@ class DshBridgePlugin(NekoPluginBase):
         # Nothing to tear down: harness runs are one-shot subprocesses that the
         # SDK context manager owns. Just report what we saw.
         self.logger.info(
-            "dsh_bridge stopping after %d run(s)", len(self._runs)
+            "deepseekharness_bridge stopping after %d run(s)", len(self._runs)
         )
         return Ok({"status": "stopped", "runs": len(self._runs)})
 
@@ -87,7 +87,7 @@ class DshBridgePlugin(NekoPluginBase):
     async def _cfg(self, key: str, default: Any = None) -> Any:
         """Read one dotted config value, tolerating an unreadable host config."""
         try:
-            return await self.config.get(f"dsh_bridge.{key}", default=default)
+            return await self.config.get(f"deepseekharness_bridge.{key}", default=default)
         except Exception as exc:  # host config unavailable — keep defaults
             self.logger.warning("config read failed for %s: %s", key, exc)
             return default

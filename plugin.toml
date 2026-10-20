@@ -1,12 +1,12 @@
 [plugin]
-id = "dsh_bridge"
+id = "deepseekharness_bridge"
 name = "DeepSeek Harness 桥接"
 description = "把 DeepSeek Harness (dsh) 的 agent 能力桥接到 N.E.K.O.，让猫娘可以驱动 harness 执行代码、分析资料等长任务。"
 short_description = "Drive DeepSeek Harness agents from N.E.K.O."
 keywords = ["deepseek", "dsh", "harness", "agent", "代码", "编程", "长任务", "桥接", "bridge"]
 version = "0.1.0"
 type = "plugin"
-entry = "plugin.plugins.dsh_bridge:DshBridgePlugin"
+entry = "plugin.plugins.deepseekharness_bridge:DeepseekharnessBridgePlugin"
 
 [plugin.author]
 name = "N.E.K.O. Community"
@@ -23,7 +23,7 @@ startup_failure = "warn"
 
 # Plugin-owned business settings. Typed on the Python side by DshSettings;
 # these are the runtime-config defaults the host merges over.
-[dsh_bridge]
+[deepseekharness_bridge]
 # Absolute path of the DeepSeek Harness checkout used to launch `pnpm dsh`.
 # Leave empty to resolve `dsh` from PATH.
 repo_path = ""

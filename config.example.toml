@@ -1,9 +1,9 @@
-# dsh_bridge 运行配置示例。
+# deepseekharness_bridge 运行配置示例。
 #
 # 复制为 config.toml 后按需修改；运行时的实际配置以 N.E.K.O. 的
-# 配置合并结果为准，这里的值是 [dsh_bridge] 段的默认值。
+# 配置合并结果为准，这里的值是 [deepseekharness_bridge] 段的默认值。
 
-[dsh_bridge]
+[deepseekharness_bridge]
 # DeepSeek Harness 源码检出路径。留空则从 PATH 找 `dsh`。
 # 注意：SDK 路径会把它当作隔离 home 的根，请确保该目录可写。
 repo_path = ""

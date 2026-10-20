@@ -1,4 +1,4 @@
-# dsh_bridge
+# deepseekharness_bridge
 
 让 N.E.K.O. 的猫娘把长任务、代码类任务交给本地 **DeepSeek Harness**（`dsh`）执行，
 并把结果读回对话。
@@ -22,7 +22,7 @@
 
 ## 配置
 
-配置写在运行配置的 `[dsh_bridge]` 段（见 `plugin.toml` 的默认值）：
+配置写在运行配置的 `[deepseekharness_bridge]` 段（见 `plugin.toml` 的默认值）：
 
 | 键 | 说明 |
 | --- | --- |
