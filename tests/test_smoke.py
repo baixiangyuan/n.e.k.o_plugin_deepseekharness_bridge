@@ -357,5 +357,53 @@ def test_logs_do_not_record_task_body() -> None:
             )
 
 
+def test_model_catalog_matches_the_running_dsh() -> None:
+    """模型目录必须与 DSH 0.2.1-rc.2 内置的一致。
+
+    Read from @deepseek-ai/dsh-llm-deepseek's DEFAULT_MODELS. An id outside this
+    set fails at request time with MODEL_UNSUPPORTED, and the previous default
+    ("deepseek-v4-flash") was not in it.
+    """
+    source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+    assert '"deepseek-flash"' in source, "缺少 deepseek-flash"
+    assert '"deepseek-v4-pro"' in source, "缺少 deepseek-v4-pro"
+
+    manifest = _manifest()
+    model = manifest.get("deepseekharness_bridge", {}).get("model")
+    assert model == "deepseek-flash", f"默认模型应为 deepseek-flash，实际 {model}"
+
+    # The stale id must be gone everywhere, not just from the default.
+    assert "deepseek-v4-flash" not in source, "还留着不存在的模型 ID"
+
+
+def test_model_choice_is_exposed_to_the_panel() -> None:
+    """模型必须能通过面板切换，且选项来自目录而非自由输入。"""
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+
+    setter = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "panel_set_model"
+        ),
+        None,
+    )
+    assert setter is not None, "找不到 panel_set_model"
+
+    # The enum is what makes the panel render a dropdown.
+    schema = next(
+        (
+            deco
+            for deco in setter.decorator_list
+            if isinstance(deco, ast.Call) and _decorator_name(deco) == "plugin_entry"
+        ),
+        None,
+    )
+    assert schema is not None
+    body = ast.dump(schema)
+    assert "enum" in body, "input_schema 缺少 enum，面板会退化成自由输入"
+    assert "_KNOWN_MODELS" in body, "enum 必须来自模型目录"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

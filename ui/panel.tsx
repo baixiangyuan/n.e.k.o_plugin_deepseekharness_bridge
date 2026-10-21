@@ -4,10 +4,12 @@ import {
   Alert,
   Card,
   DataTable,
+  Field,
   Grid,
   KeyValue,
   Page,
   Section,
+  Select,
   Stack,
   StatCard,
   StatusBadge,
@@ -40,6 +42,12 @@ type Settings = {
   repo_path?: string
 }
 
+type ModelEntry = {
+  id: string
+  name: string
+  description?: string
+}
+
 type RunRecord = {
   session_id: string
   task_chars: number
@@ -51,6 +59,7 @@ type RunRecord = {
 type State = {
   harness?: HarnessState
   settings?: Settings
+  models?: ModelEntry[]
   runs?: RunRecord[]
   runs_total?: number
   dsh_bridge?: string
@@ -70,6 +79,8 @@ export default function Panel(props: PluginSurfaceProps<State>) {
 
   const refresh = findAction(actions, "panel_refresh")
   const runTask = findAction(actions, "panel_run_task")
+  const setModel = findAction(actions, "panel_set_model")
+  const models = state.models || []
 
   // The DSH-side bundle is bootstrapped on startup, so this normally reads
   // "installed". Anything else explains what is missing.
@@ -134,7 +145,6 @@ export default function Panel(props: PluginSurfaceProps<State>) {
                   label: t("dsh 可执行文件"),
                   value: harness.dsh_executable || "—",
                 },
-                { label: t("模型"), value: settings.model || "—" },
                 { label: t("Profile"), value: settings.profile || "—" },
                 {
                   label: t("任务超时（秒）"),
@@ -146,6 +156,33 @@ export default function Panel(props: PluginSurfaceProps<State>) {
             {refresh ? <ActionButton action={refresh} label={t("刷新")} /> : null}
           </Stack>
         </Card>
+
+        {models.length > 0 ? (
+          <Card title={t("模型")}>
+            <Stack gap={8}>
+              <Field
+                label={t("执行任务使用的模型")}
+                help={
+                  models.find((m) => m.id === settings.model)?.description ||
+                  t("切换后立即对之后的任务生效。")
+                }
+              >
+                <Select
+                  value={settings.model || ""}
+                  options={models.map((m) => ({ value: m.id, label: m.name }))}
+                  onChange={(next) => {
+                    // Fire-and-forget: refresh_context reloads the panel with
+                    // the persisted value, so no local state is needed here.
+                    void props.api.call("panel_set_model", { model: next })
+                  }}
+                />
+              </Field>
+              <Text>
+                {t("切换后立即对之后的任务生效；已在进行中的任务不受影响。")}
+              </Text>
+            </Stack>
+          </Card>
+        ) : null}
 
         <Card title={t("运行任务")}>
           {runTask ? (

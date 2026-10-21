@@ -42,9 +42,33 @@
 | `dsh_executable` | 显式指定 `dsh` 可执行文件 |
 | `workspace` | harness 的工作目录，默认为插件存储目录下的 `workspace/` |
 | `profile` | 传给 `dsh` 的 profile，默认 `headless`（桌面端装法唯一可用的选项） |
-| `model` | 每次运行使用的模型 ID |
+| `model` | 模型 ID，默认 `deepseek-flash`；面板上有下拉可切 |
 | `task_timeout` | 单次任务超时（秒），默认 600 |
 | `log_dir` | 运行日志目录，默认为 `storage_dir/runs` |
+
+## 模型
+
+面板的「模型」卡片列出当前 DSH 支持的模型，选中即用，之后的任务立即生效。
+
+| ID | 名称 | 说明 |
+| --- | --- | --- |
+| `deepseek-flash` | DeepSeek-V4.1-Flash | 默认，快且支持图像输入 |
+| `deepseek-v4-pro` | DeepSeek-V4-Pro | 更强编码与推理，成本更高 |
+
+这份目录来自 DSH `0.2.1-rc.2` 内置的 `DEFAULT_MODELS`。headless profile 故意
+禁用了账号体系（`credentials` / `authorization` / `deepseek-account` 三项都是
+`disabled: true`），所以在线的 `/models` 列表拿不到，内置目录是唯一权威来源。
+DSH 升级后若有新模型，需要同步 `__init__.py` 里的 `_MODEL_CATALOG`。
+
+## 凭据
+
+headless 不用交互式凭据存储，只读启动环境里的 `DEEPSEEK_API_KEY`。如果你在
+DSH 界面里登录的是 DeepSeek 账号（而非 API key），headless 会用不了——那是
+DSH 的设计，不是插件的问题。两条路可选：
+
+1. 去 [platform.deepseek.com](https://platform.deepseek.com/) 拿 API key，
+   写进 DSH 的凭据（`~/.dsh/.credentials.yaml`）或设为环境变量
+2. 在插件配置里把 `profile` 换成一个启用了账号体系的 profile
 
 ## 日志
 

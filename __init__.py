@@ -32,13 +32,30 @@ from plugin.sdk.plugin import (
     ui,
 )
 
-# DeepSeek Harness 支持的常见模型；UI 只展示其中一部分，这里供校验提示使用。
-_KNOWN_MODELS = (
-    "deepseek-v4-flash",
-    "deepseek-v41-flash",
-    "deepseek-chat",
-    "deepseek-reasoner",
+# Model catalog the running DeepSeek Harness ships, read from its own source
+# (@deepseek-ai/dsh-llm-deepseek DEFAULT_MODELS in 0.2.1-rc.2). The headless
+# profile disables the account provider, so the online /models listing is not
+# available and this built-in catalog is the source of truth.
+#
+# Keep in sync when DSH ships new models; an unknown id fails at request time
+# with MODEL_UNSUPPORTED.
+_MODEL_CATALOG: tuple[dict[str, str], ...] = (
+    {
+        "id": "deepseek-flash",
+        "name": "DeepSeek-V4.1-Flash",
+        "description": "默认选择：快且支持图像输入，适合大多数任务。",
+    },
+    {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek-V4-Pro",
+        "description": "更强的编码与推理，适合复杂任务，成本更高。",
+    },
 )
+
+_DEFAULT_MODEL = "deepseek-flash"
+
+# Model ids the catalog offers, for config validation and the panel dropdown.
+_KNOWN_MODELS = tuple(entry["id"] for entry in _MODEL_CATALOG)
 
 
 def _truncate(text: str, limit: int = 6000) -> str:
@@ -125,12 +142,15 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             },
             "dsh_bridge": self._dsh_bridge_state,
             "settings": {
-                "model": str(await self._cfg("model", _KNOWN_MODELS[0])),
+                "model": str(await self._cfg("model", _DEFAULT_MODEL)),
                 "profile": str(await self._cfg("profile", "headless")),
                 "task_timeout": float(await self._cfg("task_timeout", 600)),
                 "workspace": str(await self._workspace()),
                 "repo_path": str(await self._cfg("repo_path", "")),
             },
+            # The panel renders this as a dropdown, so a user picks a model
+            # instead of typing an id that may not exist.
+            "models": [dict(entry) for entry in _MODEL_CATALOG],
             "runs": runs,
             "runs_total": len(self._runs),
         }
@@ -179,6 +199,39 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             "mode": payload["mode"],
             "response_preview": payload["response"][:400],
         })
+
+    @ui.action(refresh_context=True)
+    @plugin_entry(
+        id="panel_set_model",
+        name="切换模型",
+        description="选择 DeepSeek Harness 执行任务时使用的模型。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "description": "模型 ID",
+                    "enum": list(_KNOWN_MODELS),
+                }
+            },
+            "required": ["model"],
+        },
+    )
+    async def panel_set_model(self, model: str, **_):
+        """Persist the chosen model so later runs use it.
+
+        The catalog is the built-in one the running DSH ships; the enum in the
+        schema is what makes the panel render a dropdown instead of a free-text
+        field, so a user cannot pick an id DSH does not know.
+        """
+        if model not in _KNOWN_MODELS:
+            return Err(SdkError(
+                f"未知模型 {model}；可用：{', '.join(_KNOWN_MODELS)}"
+            ))
+
+        await self.config.update({"deepseekharness_bridge.model": model})
+        self.logger.info("model switched to %s", model)
+        return Ok({"ok": True, "model": model})
 
     # --- DSH side bootstrap --------------------------------------------
 
@@ -570,7 +623,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         """Run one harness task, preferring the SDK and falling back to the CLI."""
         started = time.time()
         workspace = await self._workspace()
-        model = str(await self._cfg("model", _KNOWN_MODELS[0]))
+        model = str(await self._cfg("model", _DEFAULT_MODEL))
         profile = str(await self._cfg("profile", "headless"))
         timeout = float(await self._cfg("task_timeout", 600))
         repo = str(await self._cfg("repo_path", ""))

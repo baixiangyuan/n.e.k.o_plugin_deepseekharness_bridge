@@ -50,8 +50,10 @@ workspace = ""
 # task without a web server. `desktop` is owned exclusively by the Electron
 # app and cannot be launched from the CLI, so it is never valid here.
 profile = "headless"
-# Model id handed to the harness on each run.
-model = "deepseek-v4-flash"
+# Model id handed to the harness on each run. Must be one the running DSH
+# knows: deepseek-flash (V4.1-Flash) or deepseek-v4-pro. The panel's model
+# dropdown writes this, so it normally does not need editing by hand.
+model = "deepseek-flash"
 # Hard ceiling for a single harness run, in seconds. DSH tasks are long by
 # nature, so this is deliberately generous.
 task_timeout = 600

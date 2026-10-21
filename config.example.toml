@@ -19,8 +19,11 @@ workspace = ""
 # `desktop` 由 Electron 独占，不能从 CLI 启动，所以这里永远不要用它。
 profile = "headless"
 
-# 每次运行使用的模型 ID。
-model = "deepseek-v4-flash"
+# 每次运行使用的模型 ID。必须是 DSH 认识的：
+#   deepseek-flash  — DeepSeek-V4.1-Flash（默认，快，支持图像）
+#   deepseek-v4-pro — DeepSeek-V4-Pro（更强推理，成本更高）
+# 面板的「模型」卡片有下拉，选完会写回这里，一般不需要手改。
+model = "deepseek-flash"
 
 # 单次任务超时（秒）。harness 任务天生较长，默认给得比较宽。
 task_timeout = 600
