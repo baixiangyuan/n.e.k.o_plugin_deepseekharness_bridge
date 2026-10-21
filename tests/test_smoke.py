@@ -197,6 +197,93 @@ def test_bootstrap_hooks_exist() -> None:
     assert "_ensure_dsh_bridge_installed" in body, "startup 没有调用 DSH 侧 bootstrap"
 
 
+def test_cli_matches_the_headless_contract() -> None:
+    """CLI 调用必须符合 headless profile 的真实契约。
+
+    Verified against DSH 0.2.1-rc.2: `--profile headless "<task>"` takes the
+    task as a positional argument. There is no `run` subcommand, no
+    `--prompt-file`, and `--session-id` only accepts an id for a session that
+    already exists (passing a fresh one fails the run).
+
+    Checks the code, not the comments: docstrings are allowed to mention the
+    flags this deliberately avoids.
+    """
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+
+    # Collect string literals that live in expressions (i.e. real arguments),
+    # skipping docstrings and comments entirely.
+    run_cli = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_via_cli"
+        ),
+        None,
+    )
+    assert run_cli is not None, "找不到 _run_via_cli"
+
+    literals: list[str] = []
+    for node in ast.walk(run_cli):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            literals.append(node.value)
+
+    assert "run" not in literals, "headless 没有 run 子命令"
+    assert "prompt-file" not in literals, "headless 不接受 --prompt-file"
+    assert "--session-id" not in literals, "--session-id 只能用于已存在的会话"
+    assert "--profile" in literals, "必须显式传 --profile"
+
+    # The task is positional, so it must be appended rather than flag-prefixed.
+    appended = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "append"
+        for node in ast.walk(run_cli)
+    )
+    assert appended, "任务必须以位置参数追加到 argv"
+
+
+def test_desktop_launcher_env_is_set() -> None:
+    """桌面端 CLI 必须经 exe 以 node 运行时启动。"""
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    run_cli = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_via_cli"
+        ),
+        None,
+    )
+    assert run_cli is not None
+    literals = [
+        node.value
+        for node in ast.walk(run_cli)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    assert "ELECTRON_RUN_AS_NODE" in literals
+    assert "--expose-internals" in literals
+
+
+def test_desktop_cli_is_a_fallback_source() -> None:
+    """桌面端安装必须被当作 dsh 可执行文件的一个来源。
+
+    Without this, a desktop-only install (no PATH entry, no source checkout)
+    resolves to nothing and the panel stays "not ready".
+    """
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    resolve = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_resolve_dsh_executable"
+        ),
+        None,
+    )
+    assert resolve is not None, "找不到 _resolve_dsh_executable"
+    body = ast.dump(resolve)
+    assert "_find_dsh_install" in body, "没有把桌面端安装作为查找来源"
+    assert "dsh-desktop-host" in body, "没有定位 asar 内的 CLI"
+
+
 def test_logs_do_not_record_task_body() -> None:
     """运行日志只记元数据。
 

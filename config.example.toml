@@ -15,7 +15,9 @@ dsh_executable = ""
 workspace = ""
 
 # 传给 `dsh` 的 profile。
-profile = "sdk-minimal"
+# `headless` 是桌面端装法的正确选择：跑一次性任务，不起 web 服务器。
+# `desktop` 由 Electron 独占，不能从 CLI 启动，所以这里永远不要用它。
+profile = "headless"
 
 # 每次运行使用的模型 ID。
 model = "deepseek-v4-flash"

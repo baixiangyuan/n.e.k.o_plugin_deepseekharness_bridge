@@ -45,8 +45,11 @@ dsh_executable = ""
 # Extra working directory the harness should treat as its workspace root.
 # Empty means the plugin falls back to its own storage directory.
 workspace = ""
-# Profile passed to `dsh`. `sdk-minimal` is the lightest self-contained one.
-profile = "sdk-minimal"
+# Profile passed to `dsh`.
+# `headless` is the right default for a desktop install: it runs a one-shot
+# task without a web server. `desktop` is owned exclusively by the Electron
+# app and cannot be launched from the CLI, so it is never valid here.
+profile = "headless"
 # Model id handed to the harness on each run.
 model = "deepseek-v4-flash"
 # Hard ceiling for a single harness run, in seconds. DSH tasks are long by

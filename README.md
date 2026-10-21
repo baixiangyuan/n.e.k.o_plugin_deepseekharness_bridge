@@ -41,7 +41,7 @@
 | `repo_path` | DeepSeek Harness 源码检出路径；SDK 模式下作为隔离 home 的根 |
 | `dsh_executable` | 显式指定 `dsh` 可执行文件 |
 | `workspace` | harness 的工作目录，默认为插件存储目录下的 `workspace/` |
-| `profile` | 传给 `dsh` 的 profile，默认 `sdk-minimal` |
+| `profile` | 传给 `dsh` 的 profile，默认 `headless`（桌面端装法唯一可用的选项） |
 | `model` | 每次运行使用的模型 ID |
 | `task_timeout` | 单次任务超时（秒），默认 600 |
 | `log_dir` | 运行日志目录，默认为 `storage_dir/runs` |

@@ -56,6 +56,9 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         super().__init__(ctx)
         self._sdk_available: bool | None = None
         self._dsh_executable: str | None = None
+        # Set when the CLI is the one bundled inside the DSH desktop app:
+        # (exe, cli.js) — that pair is how it must be launched.
+        self._dsh_desktop_launcher: tuple[str, str] | None = None
         self._runs: dict[str, dict[str, Any]] = {}
         self._dsh_bridge_state: str = "unknown"
         self._lock = asyncio.Lock()
@@ -123,7 +126,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             "dsh_bridge": self._dsh_bridge_state,
             "settings": {
                 "model": str(await self._cfg("model", _KNOWN_MODELS[0])),
-                "profile": str(await self._cfg("profile", "sdk-minimal")),
+                "profile": str(await self._cfg("profile", "headless")),
                 "task_timeout": float(await self._cfg("task_timeout", 600)),
                 "workspace": str(await self._workspace()),
                 "repo_path": str(await self._cfg("repo_path", "")),
@@ -454,6 +457,24 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             ):
                 if candidate.exists():
                     return str(candidate)
+
+        # The desktop app puts no `dsh` on PATH, but it ships a working CLI
+        # inside its own asar. This is the common install, so check it before
+        # giving up.
+        desktop = self._find_dsh_install()
+        if desktop is not None:
+            exe = desktop / "DeepSeek Harness.exe"
+            cli = (
+                desktop / "resources" / "app.asar" / "dsh" / "node_modules"
+                / "@deepseek-ai" / "dsh-desktop-host" / "lib" / "cli.js"
+            )
+            if exe.exists() and cli.exists():
+                # That pair is how the desktop CLI must be launched: the exe
+                # doubles as a node runtime under ELECTRON_RUN_AS_NODE.
+                self._dsh_desktop_launcher = (str(exe), str(cli))
+                self.logger.info("using the DSH desktop CLI at %s", cli)
+                return str(cli)
+
         return None
 
     # --- entry points --------------------------------------------------
@@ -544,7 +565,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         started = time.time()
         workspace = await self._workspace()
         model = str(await self._cfg("model", _KNOWN_MODELS[0]))
-        profile = str(await self._cfg("profile", "sdk-minimal"))
+        profile = str(await self._cfg("profile", "headless"))
         timeout = float(await self._cfg("task_timeout", 600))
         repo = str(await self._cfg("repo_path", ""))
 
@@ -620,32 +641,50 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         executable: str,
         timeout: float,
     ) -> str:
-        """Run through the ``dsh`` CLI as a one-shot subprocess."""
+        """Run through the ``dsh`` CLI as a one-shot subprocess.
+
+        Two launch shapes: a real ``dsh`` binary (source checkout or PATH), and
+        the CLI bundled inside the DSH desktop app, which has to be started
+        through that app's exe with ELECTRON_RUN_AS_NODE=1.
+
+        The headless profile takes the task as a positional argument and prints
+        the final answer to stdout — there is no `run` subcommand and no
+        ``--prompt-file``. The task therefore does land in argv; the trade-off
+        is accepted because this is a local, single-user process and the CLI
+        offers no alternative.
+        """
         repo = str(await self._cfg("repo_path", ""))
-        if repo and "node_modules" in executable:
+        launcher = self._dsh_desktop_launcher
+
+        if launcher is not None and executable == launcher[1]:
+            argv = [launcher[0], "--expose-internals", launcher[1]]
+            cwd = str(workspace)
+        elif repo and "node_modules" in executable:
+            argv = [executable]
             cwd = repo
         else:
+            argv = [executable]
             cwd = str(workspace)
 
-        # `dsh run` prints the final assistant response to stdout; a prompt file
-        # keeps the task out of argv and out of the process table.
-        prompt_file = workspace / f".dsh-prompt-{session}.txt"
-        prompt_file.write_text(task, encoding="utf-8")
+        argv += ["--profile", profile]
 
-        cmd = [
-            executable,
-            "run",
-            "--profile", profile,
-            "--model", model,
-            "--prompt-file", str(prompt_file),
-            "--session-id", session,
-        ]
+        # No --session-id here: the CLI only accepts an id for a session that
+        # already exists, and each run starts a fresh one. The session id is
+        # still tracked locally for the run log and panel.
+        if model:
+            # The task is positional and goes last, so every flag precedes it.
+            argv += ["--model", model]
+
+        argv.append(task)
 
         env = dict(os.environ)
         env.setdefault("DSH_WORKSPACE", str(workspace))
+        if launcher is not None:
+            # Makes the exe behave as a node runtime rather than opening the GUI.
+            env["ELECTRON_RUN_AS_NODE"] = "1"
 
         proc = await asyncio.create_subprocess_exec(
-            *cmd,
+            *argv,
             cwd=cwd,
             env=env,
             stdout=asyncio.subprocess.PIPE,
@@ -656,10 +695,6 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         finally:
             if proc.returncode is None:
                 proc.kill()
-            try:
-                prompt_file.unlink()
-            except OSError:
-                pass
 
         text = stdout.decode("utf-8", errors="replace").strip()
         if proc.returncode != 0 and not text:
