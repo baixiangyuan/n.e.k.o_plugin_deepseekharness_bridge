@@ -284,6 +284,52 @@ def test_desktop_cli_is_a_fallback_source() -> None:
     assert "dsh-desktop-host" in body, "没有定位 asar 内的 CLI"
 
 
+def test_desktop_cli_probes_the_archive_not_its_entries() -> None:
+    """桌面端分支必须检查 app.asar 本身，而不是 asar 内的路径。
+
+    app.asar is a single archive file: Path.exists() on a path inside it is
+    always False for a plain interpreter — only the app's Electron runtime
+    resolves asar entries. Requiring the inner path to exist made the desktop
+    install undetectable, which is exactly the "not ready" bug.
+    """
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    resolve = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_resolve_dsh_executable"
+        ),
+        None,
+    )
+    assert resolve is not None
+
+    literals = [
+        node.value
+        for node in ast.walk(resolve)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    assert "app.asar" in literals, "没有检查 app.asar 归档本身"
+
+    # Which variables get .exists() called on them. `asar` must be one of them,
+    # and the inner cli.js path must not be — that is the whole bug.
+    def var_name(node: ast.expr) -> str | None:
+        return node.id if isinstance(node, ast.Name) else None
+
+    checked: set[str] = set()
+    for node in ast.walk(resolve):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "exists"):
+            continue
+        name = var_name(func.value)
+        if name:
+            checked.add(name)
+
+    assert "asar" in checked, f"exists() 没作用在 asar 上；实际检查了 {sorted(checked)}"
+    assert "cli" not in checked, "exists() 不能作用在 asar 内的 cli.js 路径上"
+
+
 def test_logs_do_not_record_task_body() -> None:
     """运行日志只记元数据。
 

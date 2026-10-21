@@ -464,11 +464,17 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         desktop = self._find_dsh_install()
         if desktop is not None:
             exe = desktop / "DeepSeek Harness.exe"
+            asar = desktop / "resources" / "app.asar"
+            # cli.js lives *inside* app.asar, a single archive file, so
+            # Path.exists() on the full path is always False — only the app's
+            # own Electron runtime resolves asar entries. Probe the archive
+            # itself and let the CLI report a missing entry point if the layout
+            # ever changes.
             cli = (
-                desktop / "resources" / "app.asar" / "dsh" / "node_modules"
+                asar / "dsh" / "node_modules"
                 / "@deepseek-ai" / "dsh-desktop-host" / "lib" / "cli.js"
             )
-            if exe.exists() and cli.exists():
+            if exe.exists() and asar.exists():
                 # That pair is how the desktop CLI must be launched: the exe
                 # doubles as a node runtime under ELECTRON_RUN_AS_NODE.
                 self._dsh_desktop_launcher = (str(exe), str(cli))
