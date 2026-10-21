@@ -4,7 +4,7 @@ name = "DeepSeek Harness 桥接"
 description = "把 DeepSeek Harness (dsh) 的 agent 能力桥接到 N.E.K.O.，让猫娘可以驱动 harness 执行代码、分析资料等长任务。"
 short_description = "Drive DeepSeek Harness agents from N.E.K.O."
 keywords = ["deepseek", "dsh", "harness", "agent", "代码", "编程", "长任务", "桥接", "bridge"]
-version = "0.1.1"
+version = "0.1.2"
 type = "plugin"
 entry = "plugin.plugins.deepseekharness_bridge:DeepseekharnessBridgePlugin"
 
