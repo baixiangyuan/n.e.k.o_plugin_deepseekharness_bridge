@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import tomllib
@@ -139,6 +140,61 @@ def test_no_secrets_in_source() -> None:
             continue
         text = path.read_text(encoding="utf-8")
         assert not re.search(r"sk-[A-Za-z0-9]{16,}", text), f"{path.name} 疑似含密钥"
+
+
+def test_embedded_dsh_bundle_is_complete() -> None:
+    """内嵌的 DSH bundle 必须自包含，否则 bootstrap 无从复制。
+
+    This is what makes "just start the N.E.K.O. plugin" work: the DSH-side
+    bundle ships inside this plugin instead of relying on a sibling checkout.
+    """
+    bundle = PLUGIN_DIR / "bundled" / "dsh-plugin-neko"
+    assert (bundle / "package.json").is_file(), "缺少 package.json"
+    assert (bundle / "lib" / "index.js").is_file(), "缺少 lib/index.js"
+    assert (bundle / "cordis.patch.yml").is_file(), "缺少 cordis.patch.yml"
+
+    manifest = json.loads((bundle / "package.json").read_text(encoding="utf-8"))
+    assert manifest["name"] == "dsh-plugin-neko"
+    assert manifest["dsh"]["bundle"]["patch"] == "./cordis.patch.yml"
+
+    entry = (bundle / "lib" / "index.js").read_text(encoding="utf-8")
+    for needle in ("export const name", "export function apply", "defineTool"):
+        assert needle in entry, f"lib/index.js 缺少 {needle}"
+
+
+def test_embedded_bundle_patch_points_at_package_name() -> None:
+    """bundle patch 必须按包名引用自己，不能是相对路径。
+
+    A relative path only works inside a --patch overlay; an installed bundle
+    needs the package name so Node resolution finds it.
+    """
+    patch = (PLUGIN_DIR / "bundled" / "dsh-plugin-neko" / "cordis.patch.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "dsh-plugin-neko" in patch
+    assert not re.search(r"name:\s*['\"]?\./", patch), "patch 里不能出现相对路径"
+
+
+def test_bootstrap_hooks_exist() -> None:
+    """startup 必须触发 DSH 侧 bootstrap，否则用户还得手动装。"""
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+
+    startup = None
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        names = {_decorator_name(deco) for deco in node.decorator_list}
+        if "lifecycle" in names:
+            # lifecycle(id="startup")
+            for deco in node.decorator_list:
+                if isinstance(deco, ast.Call):
+                    for kw in deco.keywords:
+                        if kw.arg == "id" and getattr(kw.value, "value", "") == "startup":
+                            startup = node
+
+    assert startup is not None, "找不到 startup 生命周期"
+    body = ast.dump(startup)
+    assert "_ensure_dsh_bridge_installed" in body, "startup 没有调用 DSH 侧 bootstrap"
 
 
 def test_logs_do_not_record_task_body() -> None:

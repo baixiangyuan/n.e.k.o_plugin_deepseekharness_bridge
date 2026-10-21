@@ -67,12 +67,22 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         # the thing that discovers a broken install.
         self._sdk_available = self._probe_sdk()
         self._dsh_executable = self._resolve_dsh_executable()
+
+        # Bootstrap the other direction: make sure the DSH side of the bridge
+        # is installed, so starting this plugin is the only step a user needs.
+        dsh_state = await self._ensure_dsh_bridge_installed()
+
         self.logger.info(
-            "deepseekharness_bridge ready (sdk=%s, dsh=%s)",
+            "deepseekharness_bridge ready (sdk=%s, dsh=%s, dsh_bridge=%s)",
             "available" if self._sdk_available else "missing",
             self._dsh_executable or "not found",
+            dsh_state,
         )
-        return Ok({"status": "ready", "sdk": self._sdk_available})
+        return Ok({
+            "status": "ready",
+            "sdk": self._sdk_available,
+            "dsh_bridge": dsh_state,
+        })
 
     @lifecycle(id="shutdown")
     async def on_shutdown(self, **_):
@@ -164,6 +174,205 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             "mode": payload["mode"],
             "response_preview": payload["response"][:400],
         })
+
+    # --- DSH side bootstrap --------------------------------------------
+
+    async def _ensure_dsh_bridge_installed(self) -> str:
+        """Make sure the DSH side of the bridge is ready to load.
+
+        The N.E.K.O. plugin and the dsh bundle ship together, so starting this
+        plugin is the only step a user should need. This checks the DSH desktop
+        profile and installs the bundle when it is missing or incomplete.
+
+        Returns a short state string for logs and the panel: ``installed``,
+        ``repaired``, ``installed-fresh``, or a reason it was skipped
+        (``no-dsh``, ``failed``).
+        """
+        try:
+            return await asyncio.to_thread(self._ensure_dsh_bridge_installed_sync)
+        except Exception as exc:
+            # A failure here must never stop the plugin from loading: the
+            # N.E.K.O. -> DSH direction works without the DSH-side bundle.
+            self.logger.warning("dsh bridge bootstrap failed: %s", exc)
+            return "failed"
+
+    def _find_dsh_install(self) -> Path | None:
+        """Locate a DeepSeek Harness desktop installation."""
+        # 1. Explicit config wins.
+        configured = self.metadata.get("dsh_install_path") if self.metadata else None
+        if configured:
+            candidate = Path(str(configured)).expanduser()
+            if (candidate / "DeepSeek Harness.exe").exists():
+                return candidate
+
+        # 2. Standard install locations.
+        roots = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "DeepSeek Harness",
+            Path("D:/DeepSeek Harness"),
+            Path(os.environ.get("PROGRAMFILES", "")) / "DeepSeek Harness",
+            Path(os.environ.get("PROGRAMFILES(X86)", "")) / "DeepSeek Harness",
+        ]
+        for root in roots:
+            try:
+                if (root / "DeepSeek Harness.exe").exists():
+                    return root
+            except OSError:
+                continue
+
+        # 3. Fall back to the running process, if any.
+        exe = self._find_dsh_process_exe()
+        if exe:
+            return exe.parent
+
+        return None
+
+    def _find_dsh_process_exe(self) -> Path | None:
+        """Find the DSH desktop exe from the process table (Windows only)."""
+        if sys.platform != "win32":
+            return None
+        try:
+            import subprocess
+
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq DeepSeek Harness.exe", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if "DeepSeek Harness.exe" not in out.stdout:
+                return None
+        except Exception:
+            return None
+
+        # tasklist gives the image name, not the path. Ask WMI instead, which
+        # does report ExecutablePath.
+        try:
+            import subprocess
+
+            ps = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-Process -Name 'DeepSeek Harness' | Select-Object -First 1).Path",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            line = ps.stdout.strip().splitlines()[0] if ps.stdout.strip() else ""
+            if line and Path(line).exists():
+                return Path(line)
+        except Exception:
+            pass
+        return None
+
+    def _dsh_bundle_source(self) -> Path | None:
+        """Where the dsh-plugin-neko bundle lives.
+
+        The embedded copy under ``bundled/dsh-plugin-neko`` is the primary
+        source: it ships inside this plugin, so the bootstrap works no matter
+        where the user installed the N.E.K.O. plugin from. A sibling checkout
+        is checked as a fallback for source-tree development.
+        """
+        candidates = [
+            self.plugin_dir / "bundled" / "dsh-plugin-neko",
+            self.plugin_dir.parent.parent.parent / "dsh-plugin-neko",
+            self.plugin_dir.parent.parent.parent.parent / "dsh-plugin-neko",
+        ]
+        for candidate in candidates:
+            if (candidate / "package.json").exists() and (candidate / "lib" / "index.js").exists():
+                return candidate
+        return None
+
+    def _ensure_dsh_bridge_installed_sync(self) -> str:
+        """Synchronous body of the DSH-side bootstrap."""
+        dsh = self._find_dsh_install()
+        if dsh is None:
+            self.logger.info("no DeepSeek Harness installation found; DSH-side bridge skipped")
+            return "no-dsh"
+
+        source = self._dsh_bundle_source()
+        if source is None:
+            self.logger.warning(
+                "dsh-plugin-neko bundle not found beside the plugin; DSH-side bridge skipped"
+            )
+            return "no-bundle"
+
+        home = Path(os.environ.get("DSH_HOME") or Path.home() / ".dsh")
+        profile_dir = home / "profiles" / "desktop"
+        target = profile_dir / "node_modules" / "dsh-plugin-neko"
+
+        manifest_ok = (target / "package.json").exists()
+        entry_ok = (target / "lib" / "index.js").exists()
+        registered = self._profile_lists_bundle(profile_dir)
+
+        if manifest_ok and entry_ok and registered:
+            return "installed"
+
+        # Copy the bundle into the profile. A copy (not a symlink) keeps the
+        # install self-contained: the profile survives the source tree moving.
+        if not (manifest_ok and entry_ok):
+            target.mkdir(parents=True, exist_ok=True)
+            for name in ("package.json", "cordis.patch.yml", "README.md"):
+                src = source / name
+                if src.exists():
+                    shutil.copyfile(src, target / name)
+            lib_src = source / "lib"
+            if lib_src.exists():
+                shutil.copytree(lib_src, target / "lib", dirs_exist_ok=True)
+            self.logger.info("copied dsh-plugin-neko into %s", target)
+
+        if not registered:
+            self._register_bundle_in_profile(profile_dir)
+
+        return "repaired" if (manifest_ok or entry_ok or registered) else "installed-fresh"
+
+    def _profile_lists_bundle(self, profile_dir: Path) -> bool:
+        """Whether the profile manifest already lists the bundle."""
+        import json
+
+        manifest = profile_dir / "package.json"
+        if not manifest.exists():
+            return False
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        bundles = data.get("dsh", {}).get("profile", {}).get("bundles", [])
+        return "dsh-plugin-neko" in bundles
+
+    def _register_bundle_in_profile(self, profile_dir: Path) -> None:
+        """Add the bundle to the profile manifest and its dependency list."""
+        import json
+
+        manifest = profile_dir / "package.json"
+        if not manifest.exists():
+            self.logger.warning("DSH desktop profile manifest not found at %s", manifest)
+            return
+
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            self.logger.warning("cannot read DSH profile manifest: %s", exc)
+            return
+
+        dsh_section = data.setdefault("dsh", {}).setdefault("profile", {})
+        bundles = dsh_section.setdefault("bundles", [])
+        if "dsh-plugin-neko" not in bundles:
+            bundles.append("dsh-plugin-neko")
+
+        deps = data.setdefault("dependencies", {})
+        deps["dsh-plugin-neko"] = "file:" + str(
+            (profile_dir / "node_modules" / "dsh-plugin-neko").as_posix()
+        )
+
+        manifest.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        self.logger.info("registered dsh-plugin-neko in %s", manifest)
 
     # --- configuration -------------------------------------------------
     async def _cfg(self, key: str, default: Any = None) -> Any:
