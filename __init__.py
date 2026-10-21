@@ -57,6 +57,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         self._sdk_available: bool | None = None
         self._dsh_executable: str | None = None
         self._runs: dict[str, dict[str, Any]] = {}
+        self._dsh_bridge_state: str = "unknown"
         self._lock = asyncio.Lock()
 
     # --- lifecycle -----------------------------------------------------
@@ -119,6 +120,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
                 "dsh_executable": self._dsh_executable,
                 "ready": bool(self._sdk_available or self._dsh_executable),
             },
+            "dsh_bridge": self._dsh_bridge_state,
             "settings": {
                 "model": str(await self._cfg("model", _KNOWN_MODELS[0])),
                 "profile": str(await self._cfg("profile", "sdk-minimal")),
@@ -291,11 +293,13 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         """Synchronous body of the DSH-side bootstrap."""
         dsh = self._find_dsh_install()
         if dsh is None:
+            self._dsh_bridge_state = "no-dsh"
             self.logger.info("no DeepSeek Harness installation found; DSH-side bridge skipped")
             return "no-dsh"
 
         source = self._dsh_bundle_source()
         if source is None:
+            self._dsh_bridge_state = "no-bundle"
             self.logger.warning(
                 "dsh-plugin-neko bundle not found beside the plugin; DSH-side bridge skipped"
             )
@@ -310,6 +314,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         registered = self._profile_lists_bundle(profile_dir)
 
         if manifest_ok and entry_ok and registered:
+            self._dsh_bridge_state = "installed"
             return "installed"
 
         # Copy the bundle into the profile. A copy (not a symlink) keeps the
@@ -328,7 +333,11 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         if not registered:
             self._register_bundle_in_profile(profile_dir)
 
-        return "repaired" if (manifest_ok or entry_ok or registered) else "installed-fresh"
+        # Something was already there: this run fixed it up rather than doing
+        # a clean install.
+        state = "repaired" if (manifest_ok or entry_ok or registered) else "installed-fresh"
+        self._dsh_bridge_state = state
+        return state
 
     def _profile_lists_bundle(self, profile_dir: Path) -> bool:
         """Whether the profile manifest already lists the bundle."""

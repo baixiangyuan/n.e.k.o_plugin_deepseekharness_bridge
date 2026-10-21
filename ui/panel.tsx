@@ -53,6 +53,7 @@ type State = {
   settings?: Settings
   runs?: RunRecord[]
   runs_total?: number
+  dsh_bridge?: string
 }
 
 function findAction(actions: HostedAction[], id: string): HostedAction | undefined {
@@ -65,9 +66,28 @@ export default function Panel(props: PluginSurfaceProps<State>) {
   const harness = state.harness || {}
   const settings = state.settings || {}
   const runs = state.runs || []
+  const bridge = state.dsh_bridge || "unknown"
 
   const refresh = findAction(actions, "panel_refresh")
   const runTask = findAction(actions, "panel_run_task")
+
+  // The DSH-side bundle is bootstrapped on startup, so this normally reads
+  // "installed". Anything else explains what is missing.
+  const bridgeLabel: Record<string, string> = {
+    installed: "已就绪",
+    repaired: "已自动修复",
+    "installed-fresh": "已自动安装",
+    "no-dsh": "未检测到 DSH",
+    "no-bundle": "缺少内嵌 bundle",
+    failed: "自动安装失败",
+    unknown: "尚未检查",
+  }
+  const bridgeTone =
+    bridge === "installed" || bridge === "repaired" || bridge === "installed-fresh"
+      ? "success"
+      : bridge === "unknown"
+        ? "default"
+        : "warning"
 
   return (
     <Page
@@ -76,13 +96,16 @@ export default function Panel(props: PluginSurfaceProps<State>) {
     >
       <Stack gap={16}>
         <Section>
-          <Grid cols={3} gap={12}>
+          <Grid cols={2} gap={12}>
             <StatCard label={t("Harness 状态")} value={harness.ready ? t("可用") : t("未就绪")} />
             <StatCard label={t("累计运行")} value={String(state.runs_total ?? 0)} />
             <StatCard
               label={t("调用方式")}
               value={harness.sdk_available ? t("Python SDK") : t("dsh CLI")}
             />
+            <Card title={t("DSH 侧桥接")}>
+              <StatusBadge tone={bridgeTone} label={bridgeLabel[bridge] || bridge} />
+            </Card>
           </Grid>
         </Section>
 
