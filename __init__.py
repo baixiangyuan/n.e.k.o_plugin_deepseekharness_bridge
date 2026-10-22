@@ -476,12 +476,34 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
 
     # --- configuration -------------------------------------------------
     async def _cfg(self, key: str, default: Any = None) -> Any:
-        """Read one dotted config value, tolerating an unreadable host config."""
+        """Read one dotted config value, tolerating an unreadable host config.
+
+        Stale values from earlier versions are corrected on read. The runtime
+        config outlives plugin upgrades, so a value that was valid once keeps
+        shadowing the manifest default — which is how a run ended up with
+        `profile=sdk-minimal` and `model=deepseek-v4-flash`, neither of which
+        the headless CLI accepts. Correcting here fixes an existing install
+        without the user having to edit config by hand.
+        """
         try:
-            return await self.config.get(f"deepseekharness_bridge.{key}", default=default)
+            value = await self.config.get(f"deepseekharness_bridge.{key}", default=default)
         except Exception as exc:  # host config unavailable — keep defaults
             self.logger.warning("config read failed for %s: %s", key, exc)
             return default
+
+        if key == "profile" and value == "sdk-minimal":
+            self.logger.warning(
+                "profile 'sdk-minimal' is no longer supported; using 'headless'"
+            )
+            return "headless"
+
+        if key == "model" and value == "deepseek-v4-flash":
+            self.logger.warning(
+                "model 'deepseek-v4-flash' does not exist; using 'deepseek-flash'"
+            )
+            return _DEFAULT_MODEL
+
+        return value
 
     async def _log_dir(self) -> Path:
         configured = await self._cfg("log_dir", "")

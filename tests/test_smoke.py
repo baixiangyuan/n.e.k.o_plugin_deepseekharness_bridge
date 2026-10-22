@@ -372,8 +372,12 @@ def test_model_catalog_matches_the_running_dsh() -> None:
     model = manifest.get("deepseekharness_bridge", {}).get("model")
     assert model == "deepseek-flash", f"默认模型应为 deepseek-flash，实际 {model}"
 
-    # The stale id must be gone everywhere, not just from the default.
-    assert "deepseek-v4-flash" not in source, "还留着不存在的模型 ID"
+    # The stale id must not survive as a usable value. It may appear where a
+    # stale value is being corrected, so check the manifest and the catalog
+    # rather than the whole source.
+    catalog = re.search(r"_MODEL_CATALOG[^\]]*\]", source, re.DOTALL)
+    assert catalog is not None
+    assert "deepseek-v4-flash" not in catalog.group(0), "目录里还有不存在的模型 ID"
 
 
 def test_model_choice_is_exposed_to_the_panel() -> None:
@@ -694,6 +698,32 @@ def test_patch_flag_precedes_profile() -> None:
     assert patch_line < profile_line, (
         "--patch 必须出现在 --profile 之前，否则会被当成位置参数"
     )
+
+
+def test_stale_config_values_are_corrected() -> None:
+    """运行时配置里的旧值必须在读取时被修正。
+
+    The runtime config outlives plugin upgrades, so a value that was valid once
+    keeps shadowing the manifest default. A real install ran with
+    profile=sdk-minimal and model=deepseek-v4-flash — the headless CLI rejects
+    sdk-minimal's argument shape and deepseek-v4-flash is not a model DSH knows.
+    """
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    cfg = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_cfg"
+        ),
+        None,
+    )
+    assert cfg is not None, "找不到 _cfg"
+    body = ast.dump(cfg)
+
+    assert "sdk-minimal" in body, "没有修正旧的 profile 值"
+    assert "deepseek-v4-flash" in body, "没有修正旧的 model 值"
+    assert '"headless"' in body or "'headless'" in body, "没有回落到 headless"
+    assert "_DEFAULT_MODEL" in body, "没有回落到默认模型"
 
 
 if __name__ == "__main__":
