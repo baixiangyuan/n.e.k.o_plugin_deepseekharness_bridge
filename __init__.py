@@ -670,6 +670,13 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         repo = str(await self._cfg("repo_path", ""))
         mode = "sdk" if self._sdk_available else "cli"
 
+        # The resolved values, not the manifest defaults: a runtime-config
+        # override is invisible otherwise and profile is the one that decides
+        # which CLI arguments are legal.
+        self.logger.info(
+            "run %s: model=%s profile=%s mode=%s", session, model, profile, mode
+        )
+
         record: dict[str, Any] = {
             "session_id": session,
             "task": task,
@@ -808,6 +815,11 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             # Makes the exe behave as a node runtime rather than opening the GUI.
             env["ELECTRON_RUN_AS_NODE"] = "1"
 
+        # Logged before the run so a CLI-level failure can be diagnosed from the
+        # plugin log alone: the argv is the part the user cannot see otherwise.
+        self.logger.info("dsh argv: %s", " ".join(argv))
+        self.logger.info("dsh cwd: %s", cwd)
+
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=cwd,
@@ -827,11 +839,14 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
                     pass
 
         text = stdout.decode("utf-8", errors="replace").strip()
-        if proc.returncode != 0 and not text:
+        if proc.returncode != 0:
+            # Warning, not debug: the default log level is INFO, so a debug
+            # entry hides the one message that explains a failed run.
             err = stderr.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(f"dsh 退出码 {proc.returncode}: {_truncate(err, 1500)}")
-        if stderr:
-            self.logger.debug("dsh stderr: %s", _truncate(stderr.decode('utf-8', errors='replace'), 1500))
+            if err:
+                self.logger.warning("dsh stderr: %s", _truncate(err, 2000))
+            if not text:
+                raise RuntimeError(f"dsh 退出码 {proc.returncode}: {_truncate(err, 1500)}")
         return text
 
     async def _write_account_patch(self, workspace: Path, model: str) -> Path | None:
