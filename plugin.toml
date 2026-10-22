@@ -50,6 +50,12 @@ workspace = ""
 # task without a web server. `desktop` is owned exclusively by the Electron
 # app and cannot be launched from the CLI, so it is never valid here.
 profile = "headless"
+# Which credential route the harness uses.
+#   deepseek-account    — reuse the DeepSeek sign-in already in DSH; no API key
+#                         needed, and the live /models listing is fetched
+#   deepseek-official   — the API-key route (DEEPSEEK_API_KEY)
+# The default re-enables the account stack that headless disables by design.
+provider = "deepseek-account"
 # Model id handed to the harness on each run. Must be one the running DSH
 # knows: deepseek-flash (V4.1-Flash) or deepseek-v4-pro. The panel's model
 # dropdown writes this, so it normally does not need editing by hand.

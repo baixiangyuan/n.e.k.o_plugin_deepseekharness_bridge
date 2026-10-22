@@ -19,6 +19,11 @@ workspace = ""
 # `desktop` 由 Electron 独占，不能从 CLI 启动，所以这里永远不要用它。
 profile = "headless"
 
+# 凭据路由。
+#   deepseek-account  — 复用 DSH 里已登录的 DeepSeek 账号，不需要 API key（默认）
+#   deepseek-official — API key 路由，需要 DEEPSEEK_API_KEY
+provider = "deepseek-account"
+
 # 每次运行使用的模型 ID。必须是 DSH 认识的：
 #   deepseek-flash  — DeepSeek-V4.1-Flash（默认，快，支持图像）
 #   deepseek-v4-pro — DeepSeek-V4-Pro（更强推理，成本更高）

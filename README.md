@@ -55,20 +55,21 @@
 | `deepseek-flash` | DeepSeek-V4.1-Flash | 默认，快且支持图像输入 |
 | `deepseek-v4-pro` | DeepSeek-V4-Pro | 更强编码与推理，成本更高 |
 
-这份目录来自 DSH `0.2.1-rc.2` 内置的 `DEFAULT_MODELS`。headless profile 故意
-禁用了账号体系（`credentials` / `authorization` / `deepseek-account` 三项都是
-`disabled: true`），所以在线的 `/models` 列表拿不到，内置目录是唯一权威来源。
-DSH 升级后若有新模型，需要同步 `__init__.py` 里的 `_MODEL_CATALOG`。
+这份目录来自 DSH `0.2.1-rc.2` 内置的 `DEFAULT_MODELS`，同时作为面板下拉的
+数据源。账号路由启用后，DSH 还会在线拉一份 `/models` 列表与它合并，所以
+新模型通常不用改代码就能出现。
 
 ## 凭据
 
-headless 不用交互式凭据存储，只读启动环境里的 `DEEPSEEK_API_KEY`。如果你在
-DSH 界面里登录的是 DeepSeek 账号（而非 API key），headless 会用不了——那是
-DSH 的设计，不是插件的问题。两条路可选：
+默认走 **DeepSeek 账号**，直接复用你已经在 DSH 里完成的登录，不需要 API key。
 
-1. 去 [platform.deepseek.com](https://platform.deepseek.com/) 拿 API key，
-   写进 DSH 的凭据（`~/.dsh/.credentials.yaml`）或设为环境变量
-2. 在插件配置里把 `profile` 换成一个启用了账号体系的 profile
+headless profile 原本把 `credentials` / `authorization` / `deepseek-account`
+三项都设成 `disabled: true`，所以插件每次运行会生成一个 patch 覆盖层把它们
+重新打开。这是 cordis 后层覆盖前层的正常用法，不改 DSH 自身，也不动你的登录
+状态。
+
+想改用 API key 的话，把配置里的 `provider` 设成 `deepseek-official`，
+并提供 `DEEPSEEK_API_KEY`。
 
 ## 日志
 
@@ -77,6 +78,7 @@ DSH 的设计，不是插件的问题。两条路可选：
 
 ## 已知限制
 
+- 账号路由下，模型列表依赖 DSH 能连上 `api.deepseek.com`；离线时回落到内置目录。
 - 会话延续依赖 DSH 自身的 session ID；本插件只透传，不维护额外状态。
 - CLI 回退路径依赖 `dsh run --prompt-file` 等参数，不同 DSH 版本可能不同，
   若你的版本不一致，请改用 SDK 路径。

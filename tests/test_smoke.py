@@ -405,5 +405,143 @@ def test_model_choice_is_exposed_to_the_panel() -> None:
     assert "_KNOWN_MODELS" in body, "enum 必须来自模型目录"
 
 
+def test_account_route_is_the_default() -> None:
+    """默认必须走账号路由，不要求用户去申请 API key。
+
+    Verified against DSH 0.2.1-rc.2: headless disables credentials,
+    authorization and deepseek-account, and a patch layer that sets them back
+    to `disabled: false` makes an existing DeepSeek sign-in work — the run
+    reaches the model and prints its answer with no API key.
+    """
+    manifest = _manifest()
+    section = manifest.get("deepseekharness_bridge", {})
+    assert section.get("provider") == "deepseek-account", (
+        "默认凭据路由应为 deepseek-account"
+    )
+
+
+def test_account_patch_reenables_the_disabled_rows() -> None:
+    """生成的 patch 必须把三个被禁用的服务重新打开。
+
+    Runs the writer for real instead of grepping source: the rows are assembled
+    by string join, so an AST check says nothing about the emitted YAML.
+    """
+    import asyncio
+    import importlib
+    import sys
+    import tempfile
+    import types
+
+    # Stub the SDK surface: the module imports plugin.sdk.plugin at top level,
+    # and the class subclasses NekoPluginBase, so it has to be a real class.
+    stub = types.ModuleType("plugin.sdk.plugin")
+
+    class _Base:
+        def __init__(self, *a, **k):
+            pass
+
+    class _Decorator:
+        """Supports both ``@x`` and ``@x(id=...)`` usage."""
+
+        def __init__(self, *a, **k):
+            pass
+
+        def __call__(self, target=None, **kwargs):
+            # Bare use returns the target; keyword use returns a decorator.
+            if target is None:
+                return lambda fn: fn
+            return target
+
+        def __getattr__(self, name):
+            return _Decorator()
+
+    stub.NekoPluginBase = _Base
+    for name in (
+        "neko_plugin", "plugin_entry", "lifecycle", "llm_tool", "ui",
+        "Ok", "Err", "SdkError", "unwrap", "unwrap_or", "Result",
+        "Plugins", "PluginRouter", "PluginConfig", "PluginStore", "SystemInfo",
+        "EntryKind", "PluginMeta", "LlmToolMeta", "OsActivitySnapshot",
+        "get_os_activity_snapshot", "PluginI18n", "tr", "PluginSettings",
+        "SettingsField", "TransportError", "get_plugin_logger", "hook",
+        "before_entry", "after_entry", "around_entry", "replace_entry",
+        "quick_action", "plugin", "message", "on_event", "custom_event",
+        "timer_interval",
+    ):
+        setattr(stub, name, _Decorator())
+
+    sys.modules.setdefault("plugin", types.ModuleType("plugin"))
+    sys.modules.setdefault("plugin.sdk", types.ModuleType("plugin.sdk"))
+    sys.modules["plugin.sdk.plugin"] = stub
+
+    sys.path.insert(0, str(PLUGIN_DIR.parent))
+    module = importlib.import_module("deepseekharness_bridge")
+    cls = module.DeepseekharnessBridgePlugin
+    instance = cls.__new__(cls)
+    instance.metadata = {}
+    instance.logger = types.SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+        exception=lambda *a, **k: None,
+    )
+    instance._dsh_executable = None
+    instance._dsh_desktop_launcher = None
+    instance._runs = {}
+    instance._dsh_bridge_state = "unknown"
+    instance._sdk_available = None
+
+    async def _cfg(key, default=None):
+        return default
+
+    instance._cfg = _cfg
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        patch = asyncio.run(instance._write_account_patch(workspace, "deepseek-flash"))
+        assert patch is not None, "账号路由下必须生成 patch"
+        text = patch.read_text(encoding="utf-8")
+
+        for row in ("credentials", "authorization", "deepseek-account"):
+            assert row in text, f"patch 没有重新启用 {row}"
+        assert "disabled: false" in text, "patch 缺少 disabled: false"
+        assert "provider: deepseek-account" in text
+        assert "model: deepseek-flash" in text
+
+        # The API-key route must not re-enable the account stack.
+
+        async def _cfg_official(key, default=None):
+            return "deepseek-official" if key == "provider" else default
+
+        instance._cfg = _cfg_official
+        assert asyncio.run(instance._write_account_patch(workspace, "m")) is None
+
+
+def test_cli_passes_the_account_patch() -> None:
+    """CLI 必须带上账号 patch，且不再传无效的 --model。
+
+    The headless app accepts only the task, --session-id and --json, so
+    `--model` is silently swallowed as a positional and breaks the task.
+    """
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    run_cli = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_via_cli"
+        ),
+        None,
+    )
+    assert run_cli is not None
+
+    literals = [
+        node.value
+        for node in ast.walk(run_cli)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    assert "--patch" in literals, "CLI 没有传 --patch"
+    assert "--model" not in literals, "headless 不接受 --model"
+    assert "_write_account_patch" in ast.dump(run_cli), "CLI 没有调用账号 patch 生成"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
