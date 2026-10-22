@@ -782,8 +782,6 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             argv = [executable]
             cwd = str(workspace)
 
-        argv += ["--profile", profile]
-
         # headless disables the account stack by design (credentials,
         # authorization, deepseek-account are all `disabled: true` in its
         # bundle). Re-enabling it through a later patch layer is what lets a
@@ -794,9 +792,14 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         # --json, so an unknown flag would be swallowed as a positional. The
         # model comes from the profile's agent-default-model row instead.
         patch = await self._write_account_patch(workspace, model)
+
+        # --patch is a launcher flag, so it must precede --profile. Putting it
+        # after makes the launcher treat it as a positional and the run fails
+        # with "too many arguments".
         if patch is not None:
             argv += ["--patch", str(patch)]
 
+        argv += ["--profile", profile]
         argv.append(task)
 
         env = dict(os.environ)

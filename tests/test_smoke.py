@@ -650,5 +650,51 @@ def test_panel_submits_via_raw_api_call() -> None:
     assert "<Select" not in panel, "不要用 Select 的 onChange 触发调用"
 
 
+def test_patch_flag_precedes_profile() -> None:
+    """--patch 必须放在 --profile 之前。
+
+    --patch is a launcher flag. Placed after --profile the launcher treats it as
+    a positional and the run dies with "too many arguments. Expected 0
+    arguments but got 1" — which is exactly what the v0.1.8 log showed.
+    """
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    run_cli = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_via_cli"
+        ),
+        None,
+    )
+    assert run_cli is not None
+
+    # Source line of each flag's `argv += [...]`. The --patch one sits inside an
+    # if-block, so body order is not enough — line numbers are.
+    patch_line: int | None = None
+    profile_line: int | None = None
+    for node in ast.walk(run_cli):
+        if not isinstance(node, ast.AugAssign):
+            continue
+        if not (isinstance(node.target, ast.Name) and node.target.id == "argv"):
+            continue
+        if not isinstance(node.value, ast.List):
+            continue
+        literals = [
+            element.value
+            for element in node.value.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        ]
+        if "--patch" in literals:
+            patch_line = node.lineno
+        if "--profile" in literals:
+            profile_line = node.lineno
+
+    assert patch_line is not None, "CLI 没有传 --patch"
+    assert profile_line is not None, "CLI 没有传 --profile"
+    assert patch_line < profile_line, (
+        "--patch 必须出现在 --profile 之前，否则会被当成位置参数"
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
