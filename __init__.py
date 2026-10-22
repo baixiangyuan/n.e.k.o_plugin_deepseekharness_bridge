@@ -78,6 +78,9 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         self._dsh_desktop_launcher: tuple[str, str] | None = None
         self._runs: dict[str, dict[str, Any]] = {}
         self._dsh_bridge_state: str = "unknown"
+        # In-flight background runs, keyed by session id. Referenced so a task
+        # is not garbage-collected before it finishes.
+        self._background_tasks: dict[str, asyncio.Task] = {}
         self._lock = asyncio.Lock()
 
     # --- lifecycle -----------------------------------------------------
@@ -107,8 +110,14 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     async def on_shutdown(self, **_):
-        # Nothing to tear down: harness runs are one-shot subprocesses that the
-        # SDK context manager owns. Just report what we saw.
+        # Let in-flight runs finish rather than abandoning them mid-task: the
+        # harness owns its own subprocess, but the coroutine still needs to
+        # record the outcome.
+        pending = [task for task in self._background_tasks.values() if not task.done()]
+        if pending:
+            self.logger.info("waiting for %d background run(s)", len(pending))
+            await asyncio.gather(*pending, return_exceptions=True)
+
         self.logger.info(
             "deepseekharness_bridge stopping after %d run(s)", len(self._runs)
         )
@@ -123,15 +132,21 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         只回传元数据（会话 ID、长度、耗时、模式），不回传任务正文或模型
         回复——面板可能被围观，日志同理。
         """
+        # Newest first: the panel lists every task with its status, text and
+        # output, and the most recent run is what a user looks for first.
         runs = [
             {
                 "session_id": record["session_id"],
-                "task_chars": record["task_chars"],
-                "elapsed_seconds": record["elapsed_seconds"],
-                "mode": record["mode"],
-                "ok": record["ok"],
+                "task": record.get("task", ""),
+                "task_chars": record.get("task_chars", 0),
+                "status": record.get("status", "ok" if record.get("ok") else "failed"),
+                "elapsed_seconds": record.get("elapsed_seconds", 0),
+                "mode": record.get("mode", "cli"),
+                "model": record.get("model", ""),
+                "output": record.get("output", ""),
+                "error": record.get("error", ""),
             }
-            for record in list(self._runs.values())[-20:]
+            for record in reversed(list(self._runs.values()))
         ]
 
         return {
@@ -153,6 +168,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             "models": [dict(entry) for entry in _MODEL_CATALOG],
             "runs": runs,
             "runs_total": len(self._runs),
+            "running_count": sum(1 for r in runs if r["status"] == "running"),
         }
 
     @ui.action(refresh_context=True)
@@ -183,21 +199,40 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         timeout=900.0,
     )
     async def panel_run_task(self, task: str, **_):
-        """面板专用入口：复用 run_task，但不把完整回复塞进面板状态。"""
+        """面板专用入口：提交任务并立即返回，不等待执行结果。
+
+        Returning immediately is what lets the panel show the task as "running"
+        and stream its output; awaiting the run would freeze the form for the
+        whole task and leave the user staring at a spinner with no output.
+        The run continues in the background and its record — status, output,
+        error — is read back through the dashboard context.
+        """
         if not task or not task.strip():
             return Err(SdkError("任务不能为空"))
 
-        outcome = await self.run_task(task)
-        if isinstance(outcome, Err):
-            return outcome
+        session = f"neko-{int(time.time())}"
+        task_text = task.strip()
 
-        payload = outcome.value
+        async def _run_in_background() -> None:
+            try:
+                await self._invoke_harness(task_text, session)
+            except Exception as exc:
+                # The record is already marked failed with the reason by
+                # _invoke_harness; nothing else to do.
+                self.logger.warning("background run %s failed: %s", session, exc)
+
+        # Fire-and-forget task. Keep a reference so it is not garbage-collected
+        # mid-run.
+        self._background_tasks[session] = asyncio.create_task(_run_in_background())
+        self._background_tasks[session].add_done_callback(
+            lambda _t, s=session: self._background_tasks.pop(s, None)
+        )
+
         return Ok({
             "ok": True,
-            "session_id": payload["session_id"],
-            "elapsed_seconds": payload["elapsed_seconds"],
-            "mode": payload["mode"],
-            "response_preview": payload["response"][:400],
+            "session_id": session,
+            "status": "running",
+            "message": "任务已提交，正在后台执行。",
         })
 
     @ui.action(refresh_context=True)
@@ -620,41 +655,63 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
     # --- harness invocation --------------------------------------------
 
     async def _invoke_harness(self, task: str, session: str) -> dict[str, Any]:
-        """Run one harness task, preferring the SDK and falling back to the CLI."""
+        """Run one harness task, preferring the SDK and falling back to the CLI.
+
+        Every run is recorded with its full lifecycle — running, then ok or
+        failed — so the panel can show all tasks with their status, task text
+        and output. The task body and the model's answer are kept in memory
+        only; the on-disk run log stays metadata-only.
+        """
         started = time.time()
         workspace = await self._workspace()
         model = str(await self._cfg("model", _DEFAULT_MODEL))
         profile = str(await self._cfg("profile", "headless"))
         timeout = float(await self._cfg("task_timeout", 600))
         repo = str(await self._cfg("repo_path", ""))
+        mode = "sdk" if self._sdk_available else "cli"
 
-        if self._sdk_available:
-            result = await self._run_via_sdk(task, session, workspace, model, profile, repo, timeout)
-        elif self._dsh_executable:
-            result = await self._run_via_cli(task, session, workspace, model, profile, self._dsh_executable, timeout)
-        else:
-            raise RuntimeError(
-                "未找到 DeepSeek Harness。请安装 Python SDK "
-                "(pip install deepseek-harness-sdk) 或在配置中指定 repo_path / dsh_executable。"
-            )
-
-        elapsed = round(time.time() - started, 2)
-        record = {
+        record: dict[str, Any] = {
             "session_id": session,
+            "task": task,
             "task_chars": len(task),
-            "elapsed_seconds": elapsed,
-            "mode": "sdk" if self._sdk_available else "cli",
-            "ok": True,
+            "status": "running",
+            "elapsed_seconds": 0.0,
+            "mode": mode,
+            "model": model,
+            "started_at": started,
+            "output": "",
+            "error": "",
         }
         self._runs[session] = record
+
+        try:
+            if self._sdk_available:
+                result = await self._run_via_sdk(task, session, workspace, model, profile, repo, timeout)
+            elif self._dsh_executable:
+                result = await self._run_via_cli(task, session, workspace, model, profile, self._dsh_executable, timeout)
+            else:
+                raise RuntimeError(
+                    "未找到 DeepSeek Harness。请在插件配置中指定 repo_path，"
+                    "或安装桌面版 / Python SDK。"
+                )
+        except Exception as exc:
+            record["status"] = "failed"
+            record["error"] = _truncate(str(exc), 1500)
+            record["elapsed_seconds"] = round(time.time() - started, 2)
+            await self._append_run_log(record)
+            raise
+
+        record["status"] = "ok"
+        record["elapsed_seconds"] = round(time.time() - started, 2)
+        record["output"] = _truncate(str(result))
         await self._append_run_log(record)
 
         return {
             "ok": True,
             "session_id": session,
-            "response": _truncate(str(result)),
-            "elapsed_seconds": elapsed,
-            "mode": record["mode"],
+            "response": record["output"],
+            "elapsed_seconds": record["elapsed_seconds"],
+            "mode": mode,
         }
 
     async def _run_via_sdk(
@@ -822,13 +879,30 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
     # --- run log -------------------------------------------------------
 
     async def _append_run_log(self, record: dict[str, Any]) -> None:
-        """Append one JSON line per run so operators can audit usage."""
+        """Append one JSON line per run so operators can audit usage.
+
+        Metadata only. The task text and the model's answer stay in memory for
+        the panel and are deliberately kept out of the on-disk log.
+        """
         import json
+
+        safe = {
+            key: record[key]
+            for key in (
+                "session_id",
+                "task_chars",
+                "status",
+                "elapsed_seconds",
+                "mode",
+                "model",
+            )
+            if key in record
+        }
 
         log_dir = await self._log_dir()
         path = log_dir / "runs.jsonl"
         try:
             with path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                handle.write(json.dumps(safe, ensure_ascii=False) + "\n")
         except OSError as exc:
             self.logger.warning("cannot append run log: %s", exc)

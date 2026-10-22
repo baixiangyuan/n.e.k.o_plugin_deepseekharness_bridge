@@ -543,5 +543,91 @@ def test_cli_passes_the_account_patch() -> None:
     assert "_write_account_patch" in ast.dump(run_cli), "CLI 没有调用账号 patch 生成"
 
 
+def test_panel_run_task_returns_immediately() -> None:
+    """面板提交任务必须立即返回，不能等任务跑完。
+
+    Awaiting the run froze the form for the whole task, so a user who clicked
+    run saw a spinner and no output — the run had started but nothing rendered
+    until it finished.
+    """
+    source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    entry = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "panel_run_task"
+        ),
+        None,
+    )
+    assert entry is not None, "找不到 panel_run_task"
+
+    body = ast.dump(entry)
+    assert "create_task" in body, "提交后没有把任务丢到后台"
+    assert "_background_tasks" in body, "没有持有后台任务引用"
+
+    # The harness run must be awaited only inside the nested background
+    # coroutine, never in the entry's own statements — that is what makes the
+    # call return immediately. ast.walk would descend into the nested function,
+    # so walk each statement and stop at function boundaries.
+    def awaits_of(node: ast.AST) -> set[str]:
+        found: set[str] = set()
+        stack = list(ast.iter_child_nodes(node))
+        while stack:
+            current = stack.pop()
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue  # do not descend into nested scopes
+            if isinstance(current, ast.Await) and isinstance(current.value, ast.Call):
+                func = current.value.func
+                if isinstance(func, ast.Attribute):
+                    found.add(func.attr)
+            stack.extend(ast.iter_child_nodes(current))
+        return found
+
+    entry_awaits: set[str] = set()
+    for stmt in entry.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        entry_awaits |= awaits_of(stmt)
+
+    assert "_invoke_harness" not in entry_awaits, (
+        "panel_run_task 本体 await 了 _invoke_harness"
+    )
+
+    # Sanity check: the background coroutine must contain it.
+    nested = [
+        node
+        for node in ast.walk(entry)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_in_background"
+    ]
+    assert nested, "没有找到后台协程 _run_in_background"
+
+
+def test_run_log_stays_metadata_only() -> None:
+    """磁盘日志只写元数据，不写任务正文和模型输出。"""
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    writer = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_append_run_log"
+        ),
+        None,
+    )
+    assert writer is not None, "找不到 _append_run_log"
+
+    literals = {
+        node.value
+        for node in ast.walk(writer)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    # These are the allowed keys; task/output/error must not be among them.
+    assert "session_id" in literals
+    assert "status" in literals
+    for forbidden in ("task", "output", "error"):
+        assert forbidden not in literals, f"日志写入了 {forbidden}"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

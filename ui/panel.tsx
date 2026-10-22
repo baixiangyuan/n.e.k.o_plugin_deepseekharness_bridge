@@ -3,6 +3,7 @@ import {
   ActionForm,
   Alert,
   Card,
+  CodeBlock,
   DataTable,
   Field,
   Grid,
@@ -14,6 +15,9 @@ import {
   StatCard,
   StatusBadge,
   Text,
+  useCallback,
+  useEffect,
+  useState,
 } from "@neko/plugin-ui"
 import type { HostedAction, PluginSurfaceProps } from "@neko/plugin-ui"
 
@@ -50,10 +54,15 @@ type ModelEntry = {
 
 type RunRecord = {
   session_id: string
-  task_chars: number
-  elapsed_seconds: number
-  mode: string
-  ok: boolean
+  task?: string
+  task_chars?: number
+  /** "running" | "ok" | "failed" */
+  status?: string
+  elapsed_seconds?: number
+  mode?: string
+  model?: string
+  output?: string
+  error?: string
 }
 
 type State = {
@@ -62,6 +71,7 @@ type State = {
   models?: ModelEntry[]
   runs?: RunRecord[]
   runs_total?: number
+  running_count?: number
   dsh_bridge?: string
 }
 
@@ -76,6 +86,31 @@ export default function Panel(props: PluginSurfaceProps<State>) {
   const settings = state.settings || {}
   const runs = state.runs || []
   const bridge = state.dsh_bridge || "unknown"
+  const runningCount = state.running_count ?? 0
+
+  // Which task's detail to show. Local UI state, not plugin state: a refresh
+  // reloads the task list and the selection survives as long as that task is
+  // still in the list.
+  const [selected, setSelected] = useState("")
+  const detail = runs.find((r) => r.session_id === selected)
+
+  // Auto-refresh while a task is running. A run can take minutes, and without
+  // this the panel would stay frozen until the user clicked refresh — which is
+  // exactly the "clicked run and saw no output" complaint.
+  useEffect(() => {
+    if (runningCount === 0) return
+    const timer = setInterval(() => {
+      void props.api.refresh()
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [runningCount, props.api])
+
+  // Select the task the form just submitted, so its output is on screen
+  // without the user having to find it in the list.
+  const handleSubmitted = useCallback((result: any) => {
+    const session = result?.session_id
+    if (typeof session === "string" && session) setSelected(session)
+  }, [])
 
   const refresh = findAction(actions, "panel_refresh")
   const runTask = findAction(actions, "panel_run_task")
@@ -109,7 +144,7 @@ export default function Panel(props: PluginSurfaceProps<State>) {
         <Section>
           <Grid cols={2} gap={12}>
             <StatCard label={t("Harness 状态")} value={harness.ready ? t("可用") : t("未就绪")} />
-            <StatCard label={t("累计运行")} value={String(state.runs_total ?? 0)} />
+            <StatCard label={t("进行中")} value={String(runningCount)} />
             <StatCard
               label={t("调用方式")}
               value={harness.sdk_available ? t("Python SDK") : t("dsh CLI")}
@@ -189,36 +224,104 @@ export default function Panel(props: PluginSurfaceProps<State>) {
             <ActionForm
               action={runTask}
               submitLabel={t("交给 harness 执行")}
-              successMessage={t("任务已提交。")}
+              successMessage={t("任务已提交，正在后台执行。")}
+              onResult={handleSubmitted}
             />
           ) : (
             <Text>{t("任务入口未暴露。")}</Text>
           )}
         </Card>
 
-        <Card title={t("最近运行")}>
-          <DataTable<RunRecord>
-            data={runs}
-            rowKey="session_id"
-            emptyText={t("还没有运行记录。")}
-            maxRows={20}
-            columns={[
-              { key: "session_id", label: t("会话") },
-              { key: "task_chars", label: t("任务长度") },
-              { key: "elapsed_seconds", label: t("耗时（秒）") },
-              { key: "mode", label: t("方式") },
-              {
-                key: "ok",
-                label: t("结果"),
-                render: (row) => (
-                  <StatusBadge
-                    tone={row.ok ? "success" : "danger"}
-                    status={row.ok ? "ok" : "failed"}
+        <Card title={t("任务")}>
+          <Stack gap={12}>
+            <Stack gap={4}>
+              <Text>
+                {runningCount > 0
+                  ? t("进行中") + "：" + String(runningCount)
+                  : t("全部任务，最新的在最上面。点击任意一行查看输出。")}
+              </Text>
+            </Stack>
+            <DataTable<RunRecord>
+              data={runs}
+              rowKey="session_id"
+              selectedKey={selected}
+              onSelect={(row) => setSelected(row.session_id)}
+              emptyText={t("还没有任务。在上方「运行任务」里提交一个。")}
+              columns={[
+                {
+                  key: "status",
+                  label: t("状态"),
+                  render: (row) => (
+                    <StatusBadge
+                      tone={
+                        row.status === "ok"
+                          ? "success"
+                          : row.status === "running"
+                            ? "info"
+                            : "danger"
+                      }
+                      status={
+                        row.status === "ok"
+                          ? "ok"
+                          : row.status === "running"
+                            ? "pending"
+                            : "failed"
+                      }
+                      label={
+                        row.status === "ok"
+                          ? t("完成")
+                          : row.status === "running"
+                            ? t("进行中")
+                            : t("失败")
+                      }
+                    />
+                  ),
+                },
+                {
+                  key: "task",
+                  label: t("任务"),
+                  render: (row) => {
+                    const text = row.task || ""
+                    return <Text>{text.length > 60 ? text.slice(0, 60) + "…" : text}</Text>
+                  },
+                },
+                { key: "model", label: t("模型") },
+                {
+                  key: "elapsed_seconds",
+                  label: t("耗时（秒）"),
+                },
+              ]}
+            />
+
+            {detail ? (
+              <Card title={t("任务详情")}>
+                <Stack gap={8}>
+                  <KeyValue
+                    items={[
+                      { label: t("会话"), value: detail.session_id },
+                      { label: t("状态"), value: detail.status },
+                      { label: t("模型"), value: detail.model || "—" },
+                      { label: t("调用方式"), value: detail.mode || "—" },
+                      {
+                        label: t("耗时（秒）"),
+                        value: String(detail.elapsed_seconds ?? 0),
+                      },
+                    ]}
                   />
-                ),
-              },
-            ]}
-          />
+                  <Text>{t("任务内容")}</Text>
+                  <CodeBlock>{detail.task || "—"}</CodeBlock>
+                  {detail.error ? (
+                    <>
+                      <Text>{t("错误")}</Text>
+                      <CodeBlock>{detail.error}</CodeBlock>
+                    </>
+                  ) : null}
+                  <Text>{t("输出")}</Text>
+                  <CodeBlock>{detail.output || t("（暂无输出）")}</CodeBlock>
+                </Stack>
+              </Card>
+            ) : null}
+          </Stack>
         </Card>
       </Stack>
     </Page>
