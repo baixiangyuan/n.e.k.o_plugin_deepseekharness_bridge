@@ -1,6 +1,6 @@
 [project]
 name = "neko-plugin-deepseekharness-bridge"
-version = "0.1.10"
+version = "0.2.0"
 description = "Bridge a local DeepSeek Harness into N.E.K.O."
 requires-python = ">=3.10"
 # No third-party dependencies: the SDK is optional at runtime and is probed
