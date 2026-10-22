@@ -1,20 +1,21 @@
 import {
   ActionButton,
-  ActionForm,
   Alert,
+  Button,
+  ButtonGroup,
   Card,
   CodeBlock,
   DataTable,
-  Field,
   Grid,
+  InlineError,
   KeyValue,
   Page,
   Section,
-  Select,
   Stack,
   StatCard,
   StatusBadge,
   Text,
+  Textarea,
   useCallback,
   useEffect,
   useState,
@@ -112,9 +113,32 @@ export default function Panel(props: PluginSurfaceProps<State>) {
     if (typeof session === "string" && session) setSelected(session)
   }, [])
 
+  // Task composer. Textarea + Button + api.call rather than ActionForm: the
+  // form helper rendered but never reached the entry, and this way any failure
+  // is visible in the panel instead of being swallowed.
+  const [draft, setDraft] = useState("")
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState("")
+
+  const submitTask = useCallback(async () => {
+    const text = draft.trim()
+    if (!text) return
+
+    setSubmitting(true)
+    setSubmitError("")
+    try {
+      const result = await props.api.call("panel_run_task", { task: text })
+      setDraft("")
+      handleSubmitted(result)
+      await props.api.refresh()
+    } catch (err) {
+      setSubmitError(String(err))
+    } finally {
+      setSubmitting(false)
+    }
+  }, [draft, props.api, handleSubmitted])
+
   const refresh = findAction(actions, "panel_refresh")
-  const runTask = findAction(actions, "panel_run_task")
-  const setModel = findAction(actions, "panel_set_model")
   const models = state.models || []
 
   // The DSH-side bundle is bootstrapped on startup, so this normally reads
@@ -195,41 +219,49 @@ export default function Panel(props: PluginSurfaceProps<State>) {
         {models.length > 0 ? (
           <Card title={t("模型")}>
             <Stack gap={8}>
-              <Field
-                label={t("执行任务使用的模型")}
-                help={
-                  models.find((m) => m.id === settings.model)?.description ||
-                  t("切换后立即对之后的任务生效。")
-                }
-              >
-                <Select
-                  value={settings.model || ""}
-                  options={models.map((m) => ({ value: m.id, label: m.name }))}
-                  onChange={(next) => {
-                    // Fire-and-forget: refresh_context reloads the panel with
-                    // the persisted value, so no local state is needed here.
-                    void props.api.call("panel_set_model", { model: next })
-                  }}
-                />
-              </Field>
               <Text>
-                {t("切换后立即对之后的任务生效；已在进行中的任务不受影响。")}
+                {models.find((m) => m.id === settings.model)?.description ||
+                  t("切换后立即对之后的任务生效。")}
               </Text>
+              <ButtonGroup>
+                {models.map((m) => (
+                  <Button
+                    key={m.id}
+                    tone={settings.model === m.id ? "primary" : "default"}
+                    onClick={() => {
+                      void props.api.call("panel_set_model", { model: m.id })
+                    }}
+                  >
+                    {m.name}
+                  </Button>
+                ))}
+              </ButtonGroup>
             </Stack>
           </Card>
         ) : null}
 
         <Card title={t("运行任务")}>
-          {runTask ? (
-            <ActionForm
-              action={runTask}
-              submitLabel={t("交给 harness 执行")}
-              successMessage={t("任务已提交，正在后台执行。")}
-              onResult={handleSubmitted}
-            />
-          ) : (
-            <Text>{t("任务入口未暴露。")}</Text>
-          )}
+          <Stack gap={8}>
+            <Field label={t("任务内容")} help={t("写清楚目标和验收标准。")}>
+              <Textarea
+                value={draft}
+                placeholder={t("例如：总结当前工作区的结构")}
+                onChange={(next) => setDraft(next)}
+              />
+            </Field>
+            <Button
+              tone="primary"
+              disabled={submitting || !draft.trim()}
+              onClick={() => {
+                void submitTask()
+              }}
+            >
+              {submitting ? t("提交中…") : t("交给 harness 执行")}
+            </Button>
+            {submitError ? (
+              <InlineError title={t("提交失败")} message={submitError} />
+            ) : null}
+          </Stack>
         </Card>
 
         <Card title={t("任务")}>

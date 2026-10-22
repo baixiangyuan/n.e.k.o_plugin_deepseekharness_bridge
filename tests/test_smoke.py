@@ -629,5 +629,26 @@ def test_run_log_stays_metadata_only() -> None:
         assert forbidden not in literals, f"日志写入了 {forbidden}"
 
 
+def test_panel_submits_via_raw_api_call() -> None:
+    """面板必须用 Button + api.call 提交，不能用 ActionForm。
+
+    ActionForm and Select's onChange both rendered but never reached the entry —
+    the plugin log showed panel_refresh firing while panel_run_task and
+    panel_set_model never did. ActionButton (which also uses api.call) worked,
+    so the submit path is fine and the form helpers are the broken part.
+    """
+    panel = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
+
+    # JSX usage, not the identifier: ActionButton contains "ActionForm" as a
+    # substring, so a bare `in` check would false-positive on the import.
+    assert "<ActionForm" not in panel, "不要用 ActionForm 提交任务"
+    assert "api.call" in panel, "必须通过 api.call 提交"
+    assert "panel_run_task" in panel
+    assert "InlineError" in panel, "提交失败必须显示出来，不能静默"
+    assert "onClick" in panel, "必须用 Button 的 onClick 触发"
+    # Select's onChange never reached the entry either.
+    assert "<Select" not in panel, "不要用 Select 的 onChange 触发调用"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
