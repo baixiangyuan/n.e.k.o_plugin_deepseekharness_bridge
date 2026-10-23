@@ -42,9 +42,6 @@ permissions = ["state:read", "action:call"]
 repo_path = ""
 # Explicit `dsh` executable. Empty means "look on PATH".
 dsh_executable = ""
-# Extra working directory the harness should treat as its workspace root.
-# Empty means the plugin falls back to its own storage directory.
-workspace = ""
 # Profile passed to `dsh`.
 # `headless` is the right default for a desktop install: it runs a one-shot
 # task without a web server. `desktop` is owned exclusively by the Electron
@@ -60,8 +57,20 @@ provider = "deepseek-account"
 # knows: deepseek-flash (V4.1-Flash) or deepseek-v4-pro. The panel's model
 # dropdown writes this, so it normally does not need editing by hand.
 model = "deepseek-flash"
+# How much the model thinks before answering: minimal / low / medium / high /
+# max. Higher spends more thinking tokens — slower and costlier, often better.
+# The panel exposes this; the CLI has no flag for it.
+reasoning_effort = "max"
+# What the harness may write: read-only / workspace-write / danger-full-access.
+# headless inherits dsh-base's read-only default, which denies every write —
+# including inside the workspace — so this defaults to workspace-write.
+sandbox_mode = "workspace-write"
 # Hard ceiling for a single harness run, in seconds. DSH tasks are long by
 # nature, so this is deliberately generous.
 task_timeout = 600
+# Working directory the harness operates on, and the root the
+# `workspace-write` sandbox allows. Empty means the plugin's own storage
+# directory, so a task can only touch files inside it.
+workspace = ""
 # Directory where run logs and artifacts are written.
 log_dir = ""

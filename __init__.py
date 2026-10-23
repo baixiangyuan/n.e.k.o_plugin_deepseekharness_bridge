@@ -57,6 +57,47 @@ _DEFAULT_MODEL = "deepseek-flash"
 # Model ids the catalog offers, for config validation and the panel dropdown.
 _KNOWN_MODELS = tuple(entry["id"] for entry in _MODEL_CATALOG)
 
+# Reasoning effort levels DSH accepts on agent-default-model. Higher effort
+# spends more thinking tokens; "max" is what the desktop profile uses.
+_EFFORT_LEVELS: tuple[dict[str, str], ...] = (
+    {"id": "minimal", "name": "极简", "description": "最快，几乎不额外思考。"},
+    {"id": "low", "name": "低", "description": "轻量推理，适合简单任务。"},
+    {"id": "medium", "name": "中", "description": "平衡速度与质量。"},
+    {"id": "high", "name": "高", "description": "更深入推理，耗时更长。"},
+    {"id": "max", "name": "最高", "description": "默认，最强推理，最慢最贵。"},
+)
+
+_DEFAULT_EFFORT = "max"
+
+_KNOWN_EFFORTS = tuple(entry["id"] for entry in _EFFORT_LEVELS)
+
+# DSH sandbox modes (SANDBOX_MODES in @deepseek-ai/dsh-sandbox-policy).
+# `workspace-write` is the default here: it lets a task create and edit files
+# under the workspace root, which is what most tasks need. `danger-full-access`
+# removes the boundary entirely but a one-shot CLI run has no approval channel
+# to service, so it is not a safe default.
+_SANDBOX_MODES: tuple[dict[str, str], ...] = (
+    {
+        "id": "read-only",
+        "name": "只读",
+        "description": "不能改任何文件，只能查看和分析。",
+    },
+    {
+        "id": "workspace-write",
+        "name": "工作区可写",
+        "description": "默认。可读写工作区目录内的文件，其他位置仍只读。",
+    },
+    {
+        "id": "danger-full-access",
+        "name": "完全访问",
+        "description": "不限制文件位置。CLI 一次性运行没有审批通道，可能直接失败。",
+    },
+)
+
+_DEFAULT_SANDBOX = "workspace-write"
+
+_KNOWN_SANDBOXES = tuple(entry["id"] for entry in _SANDBOX_MODES)
+
 
 def _truncate(text: str, limit: int = 6000) -> str:
     """Keep tool payloads small enough for a prompt without hiding that they were cut."""
@@ -81,6 +122,12 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         # In-flight background runs, keyed by session id. Referenced so a task
         # is not garbage-collected before it finishes.
         self._background_tasks: dict[str, asyncio.Task] = {}
+        # Set when the user picks a model or reasoning effort in the panel. Takes
+        # precedence over config so the choice applies immediately rather than
+        # whenever the config read next happens to catch up.
+        self._model_override: str | None = None
+        self._effort_override: str | None = None
+        self._sandbox_override: str | None = None
         self._lock = asyncio.Lock()
 
     # --- lifecycle -----------------------------------------------------
@@ -159,6 +206,8 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             "settings": {
                 "model": str(await self._cfg("model", _DEFAULT_MODEL)),
                 "profile": str(await self._cfg("profile", "headless")),
+                "reasoning_effort": str(await self._cfg("reasoning_effort", _DEFAULT_EFFORT)),
+                "sandbox_mode": str(await self._cfg("sandbox_mode", _DEFAULT_SANDBOX)),
                 "task_timeout": float(await self._cfg("task_timeout", 600)),
                 "workspace": str(await self._workspace()),
                 "repo_path": str(await self._cfg("repo_path", "")),
@@ -166,6 +215,8 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             # The panel renders this as a dropdown, so a user picks a model
             # instead of typing an id that may not exist.
             "models": [dict(entry) for entry in _MODEL_CATALOG],
+            "efforts": [dict(entry) for entry in _EFFORT_LEVELS],
+            "sandboxes": [dict(entry) for entry in _SANDBOX_MODES],
             "runs": runs,
             "runs_total": len(self._runs),
             "running_count": sum(1 for r in runs if r["status"] == "running"),
@@ -255,18 +306,108 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
     async def panel_set_model(self, model: str, **_):
         """Persist the chosen model so later runs use it.
 
-        The catalog is the built-in one the running DSH ships; the enum in the
-        schema is what makes the panel render a dropdown instead of a free-text
-        field, so a user cannot pick an id DSH does not know.
+        Also updates the in-process value right away: the config write is
+        asynchronous and the dashboard context re-reads it on refresh, so
+        without this the button looks like it did nothing until something else
+        happens to re-read the config.
         """
         if model not in _KNOWN_MODELS:
             return Err(SdkError(
                 f"未知模型 {model}；可用：{', '.join(_KNOWN_MODELS)}"
             ))
 
-        await self.config.update({"deepseekharness_bridge.model": model})
+        try:
+            await self.config.update({"deepseekharness_bridge.model": model})
+        except Exception as exc:
+            # The in-process value still changes, so the choice takes effect
+            # for this session even if persistence failed.
+            self.logger.warning("cannot persist model choice: %s", exc)
+
+        self._model_override = model
         self.logger.info("model switched to %s", model)
         return Ok({"ok": True, "model": model})
+
+    @ui.action(refresh_context=True)
+    @plugin_entry(
+        id="panel_set_effort",
+        name="思考强度",
+        description="选择 DeepSeek Harness 的推理投入程度。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "effort": {
+                    "type": "string",
+                    "description": "推理投入程度",
+                    "enum": list(_KNOWN_EFFORTS),
+                }
+            },
+            "required": ["effort"],
+        },
+    )
+    async def panel_set_effort(self, effort: str, **_):
+        """Persist the reasoning effort for later runs.
+
+        Applied through the same patch that carries the model: the headless CLI
+        has no flag for it, so the profile's agent-default-model row is the only
+        place it can be set.
+        """
+        if effort not in _KNOWN_EFFORTS:
+            return Err(SdkError(
+                f"未知思考强度 {effort}；可用：{', '.join(_KNOWN_EFFORTS)}"
+            ))
+
+        try:
+            await self.config.update(
+                {"deepseekharness_bridge.reasoning_effort": effort}
+            )
+        except Exception as exc:
+            self.logger.warning("cannot persist reasoning effort: %s", exc)
+
+        self._effort_override = effort
+        self.logger.info("reasoning effort switched to %s", effort)
+        return Ok({"ok": True, "effort": effort})
+
+    @ui.action(refresh_context=True)
+    @plugin_entry(
+        id="panel_set_sandbox",
+        name="文件权限",
+        description="选择 harness 能读写哪些文件。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "description": "沙箱模式",
+                    "enum": list(_KNOWN_SANDBOXES),
+                }
+            },
+            "required": ["mode"],
+        },
+    )
+    async def panel_set_sandbox(self, mode: str, **_):
+        """Persist the sandbox mode for later runs.
+
+        This is what lets a task create files at all: headless inherits
+        dsh-base's read-only default, which denies every write — including
+        inside the workspace. ``workspace-write`` is the useful middle ground,
+        and it needs no approval channel, which a one-shot CLI run cannot
+        service anyway.
+        """
+        if mode not in _KNOWN_SANDBOXES:
+            return Err(SdkError(
+                f"未知沙箱模式 {mode}；可用：{', '.join(_KNOWN_SANDBOXES)}"
+            ))
+
+        try:
+            await self.config.update(
+                {"deepseekharness_bridge.sandbox_mode": mode}
+            )
+        except Exception as exc:
+            self.logger.warning("cannot persist sandbox mode: %s", exc)
+
+        self._sandbox_override = mode
+        self.logger.info("sandbox mode switched to %s", mode)
+        return Ok({"ok": True, "mode": mode})
 
     # --- DSH side bootstrap --------------------------------------------
 
@@ -484,7 +625,17 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         `profile=sdk-minimal` and `model=deepseek-v4-flash`, neither of which
         the headless CLI accepts. Correcting here fixes an existing install
         without the user having to edit config by hand.
+
+        An in-process override (set from the panel) wins over everything, so a
+        choice applies on the very next read.
         """
+        if key == "model" and self._model_override:
+            return self._model_override
+        if key == "reasoning_effort" and self._effort_override:
+            return self._effort_override
+        if key == "sandbox_mode" and self._sandbox_override:
+            return self._sandbox_override
+
         try:
             value = await self.config.get(f"deepseekharness_bridge.{key}", default=default)
         except Exception as exc:  # host config unavailable — keep defaults
@@ -518,11 +669,19 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         return path
 
     async def _workspace(self) -> Path:
+        """Where the harness runs.
+
+        The plugin's own storage directory by default. This is also the
+        ``workspace-write`` sandbox root, so a task can create and edit files
+        here without touching anything outside it — set ``workspace`` explicitly
+        to point somewhere else, and the sandbox root follows.
+        """
         configured = await self._cfg("workspace", "")
         if configured:
             path = Path(str(configured)).expanduser()
         else:
             path = self.storage_dir / "workspace"
+
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -879,6 +1038,10 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         what makes an existing DSH sign-in usable — no API key required — and
         makes the provider fetch the live /models listing.
 
+        The patch also carries the chosen model and reasoning effort, because
+        the CLI has no flag for either: the profile's agent-default-model row is
+        the only place they can be set.
+
         Returns the patch path, or None when the caller already asked for the
         API-key route (``provider: deepseek-official``), where re-enabling the
         account stack would only add latency.
@@ -886,6 +1049,24 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         provider = str(await self._cfg("provider", "deepseek-account"))
         if provider == "deepseek-official":
             return None
+
+        effort = str(await self._cfg("reasoning_effort", "max"))
+        if effort not in _EFFORT_LEVELS:
+            self.logger.warning(
+                "unknown reasoning effort %r; using 'max'", effort
+            )
+            effort = "max"
+
+        # headless inherits dsh-base's read-only default, which blocks every
+        # write — including inside the workspace. workspace-write lets the task
+        # operate on the files under the workspace root without an approval
+        # channel, which a one-shot CLI run has no way to service.
+        sandbox = str(await self._cfg("sandbox_mode", "workspace-write"))
+        if sandbox not in _SANDBOX_MODES:
+            self.logger.warning(
+                "unknown sandbox mode %r; using 'workspace-write'", sandbox
+            )
+            sandbox = "workspace-write"
 
         path = workspace / ".neko-account.patch.yml"
         try:
@@ -905,6 +1086,14 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
                         "  config:",
                         f"    provider: {provider}",
                         f"    model: {model}",
+                        f"    reasoningEffort: {effort}",
+                        # dsh-base leaves this at read-only, which denies every
+                        # write. The workspace root below is what the harness is
+                        # allowed to touch.
+                        "- id: sandbox-policy",
+                        "  config:",
+                        f"    mode: {sandbox}",
+                        f"    workspaceRoot: {workspace.as_posix()}",
                         "",
                     ]
                 ),

@@ -726,5 +726,57 @@ def test_stale_config_values_are_corrected() -> None:
     assert "_DEFAULT_MODEL" in body, "没有回落到默认模型"
 
 
+def test_sandbox_is_configurable_and_not_read_only() -> None:
+    """沙箱必须可配，且默认不是 read-only。
+
+    headless inherits dsh-base's read-only default, which denies every write —
+    the harness refused to create a folder and reported it needed an approval
+    channel a one-shot CLI run cannot service. The patch now sets the mode and
+    the workspace root explicitly.
+
+    Verified against DSH 0.2.1-rc.2 with workspace-write: the harness created
+    the requested folder inside the workspace.
+    """
+    manifest = _manifest()
+    section = manifest.get("deepseekharness_bridge", {})
+    mode = section.get("sandbox_mode")
+    assert mode == "workspace-write", f"默认沙箱应为 workspace-write，实际 {mode}"
+    assert mode != "read-only", "read-only 会让 harness 无法创建任何文件"
+
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    writer = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_write_account_patch"
+        ),
+        None,
+    )
+    assert writer is not None
+
+    # Rows are emitted as prefixed strings ("- id: sandbox-policy",
+    # "    workspaceRoot: "), so match the source segment rather than exact
+    # literals.
+    source_of_writer = ast.get_source_segment(
+        (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"), writer
+    )
+    assert source_of_writer is not None
+    assert "sandbox-policy" in source_of_writer, "patch 没有配置 sandbox-policy 行"
+    assert "workspaceRoot" in source_of_writer, "patch 没有写 workspaceRoot"
+    assert "mode" in source_of_writer, "patch 没有写 mode"
+
+
+def test_effort_is_configurable() -> None:
+    """思考强度必须可配——patch 曾经写死 max。"""
+    manifest = _manifest()
+    assert manifest["deepseekharness_bridge"].get("reasoning_effort") == "max"
+
+    source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+    assert "reasoningEffort" in source, "patch 没有写 reasoningEffort"
+    assert "_EFFORT_LEVELS" in source
+    assert '"high"' in source, "缺少 high 档位"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

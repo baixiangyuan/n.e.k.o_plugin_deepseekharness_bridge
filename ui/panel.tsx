@@ -42,12 +42,26 @@ type HarnessState = {
 type Settings = {
   model?: string
   profile?: string
+  reasoning_effort?: string
+  sandbox_mode?: string
   task_timeout?: number
   workspace?: string
   repo_path?: string
 }
 
 type ModelEntry = {
+  id: string
+  name: string
+  description?: string
+}
+
+type EffortEntry = {
+  id: string
+  name: string
+  description?: string
+}
+
+type SandboxEntry = {
   id: string
   name: string
   description?: string
@@ -70,6 +84,8 @@ type State = {
   harness?: HarnessState
   settings?: Settings
   models?: ModelEntry[]
+  efforts?: EffortEntry[]
+  sandboxes?: SandboxEntry[]
   runs?: RunRecord[]
   runs_total?: number
   running_count?: number
@@ -140,6 +156,8 @@ export default function Panel(props: PluginSurfaceProps<State>) {
 
   const refresh = findAction(actions, "panel_refresh")
   const models = state.models || []
+  const efforts = state.efforts || []
+  const sandboxes = state.sandboxes || []
 
   // The DSH-side bundle is bootstrapped on startup, so this normally reads
   // "installed". Anything else explains what is missing.
@@ -236,6 +254,57 @@ export default function Panel(props: PluginSurfaceProps<State>) {
                   </Button>
                 ))}
               </ButtonGroup>
+            </Stack>
+          </Card>
+        ) : null}
+
+        {efforts.length > 0 ? (
+          <Card title={t("思考强度")}>
+            <Stack gap={8}>
+              <Text>
+                {efforts.find((e) => e.id === settings.reasoning_effort)?.description ||
+                  t("思考越深，耗时和成本越高。")}
+              </Text>
+              <ButtonGroup>
+                {efforts.map((e) => (
+                  <Button
+                    key={e.id}
+                    tone={settings.reasoning_effort === e.id ? "primary" : "default"}
+                    onClick={() => {
+                      void props.api.call("panel_set_effort", { effort: e.id })
+                    }}
+                  >
+                    {e.name}
+                  </Button>
+                ))}
+              </ButtonGroup>
+            </Stack>
+          </Card>
+        ) : null}
+
+        {sandboxes.length > 0 ? (
+          <Card title={t("文件权限")}>
+            <Stack gap={8}>
+              <Text>
+                {sandboxes.find((s) => s.id === settings.sandbox_mode)?.description ||
+                  t("决定 harness 能读写哪些文件。")}
+              </Text>
+              <ButtonGroup>
+                {sandboxes.map((s) => (
+                  <Button
+                    key={s.id}
+                    tone={settings.sandbox_mode === s.id ? "primary" : "default"}
+                    onClick={() => {
+                      void props.api.call("panel_set_sandbox", { mode: s.id })
+                    }}
+                  >
+                    {s.name}
+                  </Button>
+                ))}
+              </ButtonGroup>
+              <Text>
+                {t("工作区目录：") + (settings.workspace || "—")}
+              </Text>
             </Stack>
           </Card>
         ) : null}
