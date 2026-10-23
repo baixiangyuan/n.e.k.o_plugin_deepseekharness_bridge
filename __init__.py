@@ -128,6 +128,9 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         self._model_override: str | None = None
         self._effort_override: str | None = None
         self._sandbox_override: str | None = None
+        # Warnings already emitted, so a re-read of the same stale config does
+        # not repeat the line on every panel refresh.
+        self._warned: set[str] = set()
         self._lock = asyncio.Lock()
 
     # --- lifecycle -----------------------------------------------------
@@ -643,18 +646,31 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             return default
 
         if key == "profile" and value == "sdk-minimal":
-            self.logger.warning(
-                "profile 'sdk-minimal' is no longer supported; using 'headless'"
+            self._warn_once(
+                "profile-stale",
+                "profile 'sdk-minimal' is no longer supported; using 'headless'",
             )
             return "headless"
 
         if key == "model" and value == "deepseek-v4-flash":
-            self.logger.warning(
-                "model 'deepseek-v4-flash' does not exist; using 'deepseek-flash'"
+            self._warn_once(
+                "model-stale",
+                "model 'deepseek-v4-flash' does not exist; using 'deepseek-flash'",
             )
             return _DEFAULT_MODEL
 
         return value
+
+    def _warn_once(self, key: str, message: str) -> None:
+        """Log a warning the first time only.
+
+        The dashboard context re-reads config on every panel refresh, so an
+        unconditional warning here repeats on each refresh and drowns the log.
+        """
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        self.logger.warning(message)
 
     async def _log_dir(self) -> Path:
         configured = await self._cfg("log_dir", "")
@@ -1051,9 +1067,10 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             return None
 
         effort = str(await self._cfg("reasoning_effort", "max"))
-        if effort not in _EFFORT_LEVELS:
-            self.logger.warning(
-                "unknown reasoning effort %r; using 'max'", effort
+        if effort not in _KNOWN_EFFORTS:
+            self._warn_once(
+                "effort-unknown",
+                f"unknown reasoning effort {effort!r}; using 'max'",
             )
             effort = "max"
 
@@ -1062,9 +1079,10 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         # operate on the files under the workspace root without an approval
         # channel, which a one-shot CLI run has no way to service.
         sandbox = str(await self._cfg("sandbox_mode", "workspace-write"))
-        if sandbox not in _SANDBOX_MODES:
-            self.logger.warning(
-                "unknown sandbox mode %r; using 'workspace-write'", sandbox
+        if sandbox not in _KNOWN_SANDBOXES:
+            self._warn_once(
+                "sandbox-unknown",
+                f"unknown sandbox mode {sandbox!r}; using 'workspace-write'",
             )
             sandbox = "workspace-write"
 

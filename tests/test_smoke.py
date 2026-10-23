@@ -778,5 +778,45 @@ def test_effort_is_configurable() -> None:
     assert '"high"' in source, "缺少 high 档位"
 
 
+def test_choice_validation_compares_against_ids() -> None:
+    """校验必须和 ID 元组比，不能和字典元组比。
+
+    The panel's sandbox and effort buttons silently did nothing: the values were
+    checked against _SANDBOX_MODES / _EFFORT_LEVELS, which are tuples of dicts,
+    so every string compared unequal and fell back to the default. The log line
+    "unknown sandbox mode 'danger-full-access'; using 'workspace-write'" is what
+    gave it away.
+    """
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    writer = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_write_account_patch"
+        ),
+        None,
+    )
+    assert writer is not None
+    source = ast.get_source_segment(
+        (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"), writer
+    )
+    assert source is not None
+
+    assert "not in _KNOWN_EFFORTS" in source, "思考强度校验用了错误的集合"
+    assert "not in _KNOWN_SANDBOXES" in source, "沙箱校验用了错误的集合"
+    assert "not in _EFFORT_LEVELS" not in source, "不能和字典元组比较"
+    assert "not in _SANDBOX_MODES" not in source, "不能和字典元组比较"
+
+
+def test_stale_config_warning_fires_once() -> None:
+    """配置告警只能打一次，否则每次面板刷新都重复一行。"""
+    source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+    assert "_warn_once" in source, "缺少 _warn_once"
+    # The two known-stale corrections must go through it.
+    for needle in ("profile-stale", "model-stale"):
+        assert needle in source, f"{needle} 没有走 _warn_once"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
