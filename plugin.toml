@@ -4,7 +4,7 @@ name = "DeepSeek Harness 桥接"
 description = "把 DeepSeek Harness (dsh) 的 agent 能力桥接到 N.E.K.O.，让猫娘可以驱动 harness 执行代码、分析资料等长任务。"
 short_description = "Drive DeepSeek Harness agents from N.E.K.O."
 keywords = ["deepseek", "dsh", "harness", "agent", "代码", "编程", "长任务", "桥接", "bridge"]
-version = "0.2.2"
+version = "0.2.3"
 type = "plugin"
 entry = "plugin.plugins.deepseekharness_bridge:DeepseekharnessBridgePlugin"
 
@@ -57,13 +57,16 @@ provider = "deepseek-account"
 # knows: deepseek-flash (V4.1-Flash) or deepseek-v4-pro. The panel's model
 # dropdown writes this, so it normally does not need editing by hand.
 model = "deepseek-flash"
-# How much the model thinks before answering: minimal / low / medium / high /
-# max. Higher spends more thinking tokens — slower and costlier, often better.
-# The panel exposes this; the CLI has no flag for it.
+# How much the model thinks before answering: off / low / high / max. (DSH's
+# Messages path accepts only these four — minimal and medium are rejected.) Higher
+# spends more thinking tokens — slower and costlier, often better. The panel
+# exposes this; the CLI has no flag for it.
 reasoning_effort = "max"
 # What the harness may write: read-only / workspace-write / danger-full-access.
-# headless inherits dsh-base's read-only default, which denies every write —
-# including inside the workspace — so this defaults to workspace-write.
+# read-only is honoured verbatim (the bridge declares it as a real preset), so
+# picking it genuinely confines the harness. workspace-write is the default
+# because most tasks need to create or edit files; danger-full-access lifts the
+# boundary entirely.
 sandbox_mode = "workspace-write"
 # Hard ceiling for a single harness run, in seconds. DSH tasks are long by
 # nature, so this is deliberately generous.

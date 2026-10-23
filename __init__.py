@@ -57,12 +57,13 @@ _DEFAULT_MODEL = "deepseek-flash"
 # Model ids the catalog offers, for config validation and the panel dropdown.
 _KNOWN_MODELS = tuple(entry["id"] for entry in _MODEL_CATALOG)
 
-# Reasoning effort levels DSH accepts on agent-default-model. Higher effort
-# spends more thinking tokens; "max" is what the desktop profile uses.
+# Reasoning effort levels DSH accepts on agent-default-model. The Messages path
+# (dsh-llm-deepseek) accepts ONLY off / low / high / max — "minimal" and
+# "medium" are not valid and the run dies with UNSUPPORTED_REASONING_EFFORT,
+# which is exactly the v0.2.x log line. Keep this list in that exact set.
 _EFFORT_LEVELS: tuple[dict[str, str], ...] = (
-    {"id": "minimal", "name": "极简", "description": "最快，几乎不额外思考。"},
+    {"id": "off", "name": "关闭", "description": "不推理，最快最省，质量最低。"},
     {"id": "low", "name": "低", "description": "轻量推理，适合简单任务。"},
-    {"id": "medium", "name": "中", "description": "平衡速度与质量。"},
     {"id": "high", "name": "高", "description": "更深入推理，耗时更长。"},
     {"id": "max", "name": "最高", "description": "默认，最强推理，最慢最贵。"},
 )
@@ -119,9 +120,6 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         self._dsh_desktop_launcher: tuple[str, str] | None = None
         self._runs: dict[str, dict[str, Any]] = {}
         self._dsh_bridge_state: str = "unknown"
-        # In-flight background runs, keyed by session id. Referenced so a task
-        # is not garbage-collected before it finishes.
-        self._background_tasks: dict[str, asyncio.Task] = {}
         # Set when the user picks a model or reasoning effort in the panel. Takes
         # precedence over config so the choice applies immediately rather than
         # whenever the config read next happens to catch up.
@@ -160,14 +158,6 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     async def on_shutdown(self, **_):
-        # Let in-flight runs finish rather than abandoning them mid-task: the
-        # harness owns its own subprocess, but the coroutine still needs to
-        # record the outcome.
-        pending = [task for task in self._background_tasks.values() if not task.done()]
-        if pending:
-            self.logger.info("waiting for %d background run(s)", len(pending))
-            await asyncio.gather(*pending, return_exceptions=True)
-
         self.logger.info(
             "deepseekharness_bridge stopping after %d run(s)", len(self._runs)
         )
@@ -253,13 +243,12 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         timeout=900.0,
     )
     async def panel_run_task(self, task: str, **_):
-        """面板专用入口：提交任务并立即返回，不等待执行结果。
+        """面板专用入口：等任务跑完，直接把结果返回。
 
-        Returning immediately is what lets the panel show the task as "running"
-        and stream its output; awaiting the run would freeze the form for the
-        whole task and leave the user staring at a spinner with no output.
-        The run continues in the background and its record — status, output,
-        error — is read back through the dashboard context.
+        Awaiting the run is the point: the operator asked for the result, not a
+        ticket number. The entry carries a generous timeout so a long task does
+        not get cut off, and the run is still recorded through its lifecycle so
+        the task list shows what happened.
         """
         if not task or not task.strip():
             return Err(SdkError("任务不能为空"))
@@ -267,26 +256,20 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         session = f"neko-{int(time.time())}"
         task_text = task.strip()
 
-        async def _run_in_background() -> None:
-            try:
-                await self._invoke_harness(task_text, session)
-            except Exception as exc:
-                # The record is already marked failed with the reason by
-                # _invoke_harness; nothing else to do.
-                self.logger.warning("background run %s failed: %s", session, exc)
-
-        # Fire-and-forget task. Keep a reference so it is not garbage-collected
-        # mid-run.
-        self._background_tasks[session] = asyncio.create_task(_run_in_background())
-        self._background_tasks[session].add_done_callback(
-            lambda _t, s=session: self._background_tasks.pop(s, None)
-        )
+        try:
+            outcome = await self._invoke_harness(task_text, session)
+        except Exception as exc:
+            # The record is already marked failed with the reason by
+            # _invoke_harness; surface it rather than an opaque transport error.
+            self.logger.warning("run %s failed: %s", session, exc)
+            return Err(SdkError(str(exc)))
 
         return Ok({
             "ok": True,
             "session_id": session,
-            "status": "running",
-            "message": "任务已提交，正在后台执行。",
+            "status": outcome.get("status", "ok"),
+            "elapsed_seconds": outcome.get("elapsed_seconds"),
+            "response": outcome.get("output", ""),
         })
 
     @ui.action(refresh_context=True)
@@ -1074,10 +1057,11 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             )
             effort = "max"
 
-        # headless inherits dsh-base's read-only default, which blocks every
-        # write — including inside the workspace. workspace-write lets the task
-        # operate on the files under the workspace root without an approval
-        # channel, which a one-shot CLI run has no way to service.
+        # Honour the user's sandbox selection verbatim. read-only is now a real
+        # preset (declared below), so picking it genuinely confines the harness
+        # instead of being silently remapped to workspace-write. workspace-write
+        # is the default because most tasks need to create or edit files, and a
+        # one-shot CLI run has no approval channel to service escalations.
         sandbox = str(await self._cfg("sandbox_mode", "workspace-write"))
         if sandbox not in _KNOWN_SANDBOXES:
             self._warn_once(
@@ -1105,9 +1089,43 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
                         f"    provider: {provider}",
                         f"    model: {model}",
                         f"    reasoningEffort: {effort}",
-                        # dsh-base leaves this at read-only, which denies every
-                        # write. The workspace root below is what the harness is
-                        # allowed to touch.
+                        # headless/dsh-base mounts a read-only bash executor
+                        # (shell.sandboxMode = "read-only") and the default preset
+                        # table only knows workspace-write(ask) and
+                        # danger-full-access(never). With no read-only entry,
+                        # derive(EMPTY_KNOBS) falls through to "custom" and the
+                        # service throws on boot. Declare all three modes as real
+                        # presets so the user's selection — read-only included —
+                        # actually applies instead of being silently remapped.
+                        #
+                        # approval is "never" on every preset because headless has
+                        # no answerer: "ask" fails closed (every escalation is
+                        # denied), so "never" is the only policy that lets a
+                        # one-shot run proceed. It auto-approves; the sandbox
+                        # mode still enforces what the harness may touch.
+                        "- id: permission-presets",
+                        "  config:",
+                        "    presets:",
+                        "      read-only:",
+                        "        sandbox: read-only",
+                        "        approval: never",
+                        "        name: 只读",
+                        "        description: 只能查看和分析，不能改动任何文件。",
+                        "      workspace-write:",
+                        "        sandbox: workspace-write",
+                        "        approval: never",
+                        "        name: 工作区可写",
+                        "        description: 可读写工作区目录内的文件，其余位置只读。",
+                        "      danger-full-access:",
+                        "        sandbox: danger-full-access",
+                        "        approval: never",
+                        "        name: 完全访问",
+                        "        description: 不限制文件位置。",
+                        f"    defaultPreset: {sandbox}",
+                        # Sandbox policy is the composition-level default mode;
+                        # the preset above pins the per-session sandbox through
+                        # setSandboxMode. Keep both in agreement with the chosen
+                        # mode so the selection is honoured end to end.
                         "- id: sandbox-policy",
                         "  config:",
                         f"    mode: {sandbox}",

@@ -511,6 +511,18 @@ def test_account_patch_reenables_the_disabled_rows() -> None:
         assert "provider: deepseek-account" in text
         assert "model: deepseek-flash" in text
 
+        # permission-presets must declare all three sandbox modes as real
+        # presets and point defaultPreset at the chosen one, so the user's
+        # read-only selection is honoured instead of throwing "custom".
+        assert "permission-presets" in text, "patch 缺少 permission-presets"
+        for preset in ("read-only", "workspace-write", "danger-full-access"):
+            assert f"{preset}:" in text, f"patch 没有声明 {preset} 预设"
+            assert "approval: never" in text, "preset 缺少 approval: never"
+        assert "defaultPreset: workspace-write" in text, "defaultPreset 未指向所选模式"
+        # approval must be never on every preset (headless has no answerer:
+        # "ask" fails closed).
+        assert text.count("approval: never") == 3, "三个 preset 都应 approval: never"
+
         # The API-key route must not re-enable the account stack.
 
         async def _cfg_official(key, default=None):
@@ -547,12 +559,12 @@ def test_cli_passes_the_account_patch() -> None:
     assert "_write_account_patch" in ast.dump(run_cli), "CLI 没有调用账号 patch 生成"
 
 
-def test_panel_run_task_returns_immediately() -> None:
-    """面板提交任务必须立即返回，不能等任务跑完。
+def test_panel_run_task_waits_for_result() -> None:
+    """面板提交任务必须等任务跑完再返回结果，不能只回个 session id。
 
-    Awaiting the run froze the form for the whole task, so a user who clicked
-    run saw a spinner and no output — the run had started but nothing rendered
-    until it finished.
+    用户的要求是"等待任务结束返回"：提交后表单应当阻塞到 harness 给出答案，
+    返回值里带 response / status / elapsed_seconds，而不只是一个 id。所以
+    panel_run_task 的本体必须直接 await 真正的运行调用，而不是丢到后台。
     """
     source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -567,14 +579,14 @@ def test_panel_run_task_returns_immediately() -> None:
     )
     assert entry is not None, "找不到 panel_run_task"
 
+    # 本体不能再有后台协程 / _background_tasks 残留——那会让调用立即返回。
     body = ast.dump(entry)
-    assert "create_task" in body, "提交后没有把任务丢到后台"
-    assert "_background_tasks" in body, "没有持有后台任务引用"
+    assert "create_task" not in body, "panel_run_task 不应把任务丢到后台"
+    assert "_background_tasks" not in body, "不应再持有后台任务引用"
 
-    # The harness run must be awaited only inside the nested background
-    # coroutine, never in the entry's own statements — that is what makes the
-    # call return immediately. ast.walk would descend into the nested function,
-    # so walk each statement and stop at function boundaries.
+    # The harness run must be awaited in the entry's own statements (not inside
+    # a nested background coroutine). Walk each statement and stop at function
+    # boundaries so nested scopes don't leak their awaits in.
     def awaits_of(node: ast.AST) -> set[str]:
         found: set[str] = set()
         stack = list(ast.iter_child_nodes(node))
@@ -595,17 +607,13 @@ def test_panel_run_task_returns_immediately() -> None:
             continue
         entry_awaits |= awaits_of(stmt)
 
-    assert "_invoke_harness" not in entry_awaits, (
-        "panel_run_task 本体 await 了 _invoke_harness"
+    assert "_invoke_harness" in entry_awaits, (
+        "panel_run_task 本体没有 await _invoke_harness，会立即返回"
     )
 
-    # Sanity check: the background coroutine must contain it.
-    nested = [
-        node
-        for node in ast.walk(entry)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_in_background"
-    ]
-    assert nested, "没有找到后台协程 _run_in_background"
+    # The return value must carry the finished task's answer, not just an id.
+    for key in ("response", "status", "elapsed_seconds"):
+        assert key in body, f"返回值缺少 {key}（任务结果未一并返回）"
 
 
 def test_run_log_stays_metadata_only() -> None:
