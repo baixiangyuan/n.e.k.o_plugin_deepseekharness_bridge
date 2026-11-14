@@ -10,6 +10,12 @@ on:
 
 permissions:
   contents: write
+  # The upstream release workflow signs build provenance in an isolated job,
+  # which needs OIDC + attestation write. A caller that grants less than the
+  # called workflow requests fails at workflow startup ("workflow file issue"),
+  # which is exactly how v0.2.4 died after upstream added the signing job.
+  id-token: write
+  attestations: write
 
 jobs:
   release:
