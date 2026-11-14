@@ -21,16 +21,21 @@
 - **运行任务** — 一个表单，直接把任务交给 harness，显示提交结果
 - **最近运行** — 最近 20 次运行的会话 ID、任务长度、耗时、调用方式、成败
 
-面板只回传元数据（会话 ID、长度、耗时、模式），不回传任务正文和模型回复。
+面板会显示每次运行的任务正文和模型回复，方便直接查看；这些内容只留在内存里，
+磁盘上的 `runs.jsonl` 仍然只记元数据（会话 ID、长度、耗时、模式）。
 
 ## 运行方式
 
 插件按以下优先级选择 harness：
 
-1. **Python SDK** — 环境里能 `import deepseek_harness` 时使用，通过
-   `DeepSeekHarness` 上下文管理器运行，子进程由 SDK 管理。
-2. **`dsh` CLI** — SDK 不可用但 PATH 或配置里能找到 `dsh` 时，以一次性子进程调用。
+1. **`dsh` CLI** — 账号路由（默认）下优先走这条：只有 CLI 的 patch 覆盖层能
+   重新打开被 headless 关掉的账号栈，也只有它应用沙箱模式和思考强度。
+2. **Python SDK** — 仅在 `provider` 不是账号路由、或根本没有 CLI 时使用。
+   注意 SDK 路径固定用 API-key provider，且**不应用** `sandbox_mode` /
+   `reasoning_effort`。
 3. **都不可用** — `status` 会明确报告，`run_task` 返回可读错误，不会静默失败。
+
+想让账号登录、沙箱、思考强度都生效，就用 CLI 路径。
 
 ## 配置
 
@@ -40,6 +45,7 @@
 | --- | --- |
 | `repo_path` | DeepSeek Harness 源码检出路径；SDK 模式下作为隔离 home 的根 |
 | `dsh_executable` | 显式指定 `dsh` 可执行文件 |
+| `dsh_install_path` | DSH 桌面版安装目录，非标准位置时用它，省去自动扫描 |
 | `workspace` | harness 的工作目录，默认为插件存储目录下的 `workspace/` |
 | `profile` | 传给 `dsh` 的 profile，默认 `headless`（桌面端装法唯一可用的选项） |
 | `model` | 模型 ID，默认 `deepseek-flash`；面板上有下拉可切 |
@@ -71,6 +77,16 @@ headless profile 原本把 `credentials` / `authorization` / `deepseek-account`
 想改用 API key 的话，把配置里的 `provider` 设成 `deepseek-official`，
 并提供 `DEEPSEEK_API_KEY`。
 
+## 启动时会改什么
+
+为了让反向桥接开箱即用，插件启动时会检查 DSH 桌面版的 profile，并在缺失或
+不完整时把内嵌的 `dsh-plugin-neko` 装进去。这**会写入 `~/.dsh` 下的
+profile 配置和 `package.json`**（只增补 `dsh-plugin-neko` 这一项，不动其它条目），
+面板上的「DSH 侧桥接」会显示结果：`已就绪` / `已自动修复` / `已自动安装`。
+
+不想要这个副作用时，把反向 bundle 从 profile 里移除即可，N.E.K.O. → DSH
+的方向不受影响。
+
 ## 日志
 
 每次运行追加一行 JSON 到 `<log_dir>/runs.jsonl`，只记录会话 ID、任务长度、
@@ -80,5 +96,9 @@ headless profile 原本把 `credentials` / `authorization` / `deepseek-account`
 
 - 账号路由下，模型列表依赖 DSH 能连上 `api.deepseek.com`；离线时回落到内置目录。
 - 会话延续依赖 DSH 自身的 session ID；本插件只透传，不维护额外状态。
-- CLI 回退路径依赖 `dsh run --prompt-file` 等参数，不同 DSH 版本可能不同，
-  若你的版本不一致，请改用 SDK 路径。
+- CLI 路径按 headless profile 的当前形状调用：任务作为位置参数、只认
+  `--session-id` / `--json`，没有 `run` 子命令也没有 `--prompt-file`。DSH 处于
+  快速迭代期，若你的版本参数不同，请改用 Python SDK 路径（但 SDK 路径不应用
+  账号、沙箱和思考强度）。
+- 单文件约 1170 行，和 DSH 内部结构耦合较深（patch 里写死了 `credentials`、
+  `permission-presets` 等行），DSH 大版本升级后可能需要同步调整。

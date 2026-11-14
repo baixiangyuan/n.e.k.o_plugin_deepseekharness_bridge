@@ -826,5 +826,101 @@ def test_stale_config_warning_fires_once() -> None:
         assert needle in source, f"{needle} 没有走 _warn_once"
 
 
+def _load_plugin_module():
+    """Import the plugin module with a stubbed SDK surface.
+
+    The module imports ``plugin.sdk.plugin`` at module scope and its class
+    subclasses ``NekoPluginBase``, so a stub is required outside the host.
+    """
+    import importlib
+    import sys
+    import types
+
+    if "deepseekharness_bridge" in sys.modules:
+        return sys.modules["deepseekharness_bridge"]
+
+    stub = types.ModuleType("plugin.sdk.plugin")
+
+    class _Base:
+        def __init__(self, *a, **k):
+            pass
+
+    class _Decorator:
+        def __init__(self, *a, **k):
+            pass
+
+        def __call__(self, target=None, **kwargs):
+            if target is None:
+                return lambda fn: fn
+            return target
+
+        def __getattr__(self, name):
+            return _Decorator()
+
+    stub.NekoPluginBase = _Base
+    for name in (
+        "neko_plugin", "plugin_entry", "lifecycle", "llm_tool", "ui",
+        "Ok", "Err", "SdkError", "unwrap", "unwrap_or", "Result",
+        "Plugins", "PluginRouter", "PluginConfig", "PluginStore", "SystemInfo",
+        "EntryKind", "PluginMeta", "LlmToolMeta", "OsActivitySnapshot",
+        "get_os_activity_snapshot", "PluginI18n", "tr", "PluginSettings",
+        "SettingsField", "TransportError", "get_plugin_logger", "hook",
+        "before_entry", "after_entry", "around_entry", "replace_entry",
+        "quick_action", "plugin", "message", "on_event", "custom_event",
+        "timer_interval",
+    ):
+        setattr(stub, name, _Decorator())
+
+    sys.modules.setdefault("plugin", types.ModuleType("plugin"))
+    sys.modules.setdefault("plugin.sdk", types.ModuleType("plugin.sdk"))
+    sys.modules["plugin.sdk.plugin"] = stub
+    sys.path.insert(0, str(PLUGIN_DIR.parent))
+    return importlib.import_module("deepseekharness_bridge")
+
+
+def test_cmd_quote_neutralizes_batch_metacharacters() -> None:
+    """批处理启动器走 cmd.exe，任务里的元字符必须被处理掉。"""
+    mod = _load_plugin_module()
+
+    quoted = mod._cmd_quote("a & b | c")
+    assert quoted == '"a & b | c"', "元字符没有被包进引号"
+    assert mod._cmd_quote("50%") == '"50%%"', "% 没有被转义成 %%"
+    assert mod._cmd_quote('say "hi"') == '"say ""hi"""', "引号没有被双写转义"
+
+
+def test_batch_argv_routes_through_cmd() -> None:
+    """dsh.cmd 必须以 cmd /d /s /c 的引号形式启动。"""
+    mod = _load_plugin_module()
+    argv = mod._batch_argv("C:/x/dsh.cmd", ["--profile", "headless", "a & b"])
+
+    assert argv[0].lower().endswith("cmd.exe")
+    assert argv[1:4] == ["/d", "/s", "/c"], "缺少 cmd 的 /d /s /c"
+    assert '"a & b"' in argv[4], "任务参数没有被引号包住"
+
+
+def test_cli_routes_batch_launchers_through_quote_helper() -> None:
+    """_run_via_cli 必须对 .cmd/.bat 走 _batch_argv。"""
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    run_cli = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_via_cli"
+        ),
+        None,
+    )
+    assert run_cli is not None
+    body = ast.dump(run_cli)
+    assert "_batch_argv" in body, "CLI 没有为批处理启动器做转义"
+    assert "_BATCH_SUFFIXES" in body, "没有判断 .cmd/.bat"
+
+
+def test_session_ids_stay_unique_within_a_second() -> None:
+    """同一秒内提交的会话 ID 不能撞车，否则运行记录会被覆盖。"""
+    mod = _load_plugin_module()
+    ids = {mod._new_session_id() for _ in range(64)}
+    assert len(ids) == 64, "同秒内生成的 session id 出现重复"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

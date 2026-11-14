@@ -17,6 +17,7 @@ import os
 import shutil
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +101,47 @@ _DEFAULT_SANDBOX = "workspace-write"
 _KNOWN_SANDBOXES = tuple(entry["id"] for entry in _SANDBOX_MODES)
 
 
+# The panel shows recent runs; keeping every run forever grows memory without
+# bound in a long-lived host process.
+_MAX_RUNS = 200
+
+# Batch launchers (.cmd/.bat) are a second command parser after CreateProcess.
+_BATCH_SUFFIXES = (".cmd", ".bat")
+
+
+def _new_session_id() -> str:
+    """A session id that stays unique for same-second submissions.
+
+    ``int(time.time())`` alone collides when two tasks land in the same second,
+    and ``_runs`` is keyed by session id — the second record would overwrite the
+    first. Milliseconds plus a short random suffix keep the readable
+    ``neko-<epoch>`` shape while staying distinct.
+    """
+    return f"neko-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+
+
+def _cmd_quote(token: str) -> str:
+    """Quote one argument for a cmd.exe command line.
+
+    Batch files run through cmd.exe, which parses the command a second time
+    after CreateProcess. Wrapping a token in double quotes makes ``& | < >``
+    literal; a literal ``"`` is escaped by doubling it, and ``%`` is doubled
+    because cmd expands ``%NAME%`` even inside quotes.
+    """
+    return '"' + token.replace("%", "%%").replace('"', '""') + '"'
+
+
+def _batch_argv(executable: str, args: list[str]) -> list[str]:
+    """Build a cmd.exe invocation for a .cmd/.bat launcher.
+
+    ``/d`` skips AutoRun and ``/s`` makes cmd strip only the outer quote pair,
+    which is the reliable way to hand it an already-quoted command line.
+    """
+    comspec = os.environ.get("COMSPEC") or "cmd.exe"
+    inner = " ".join([_cmd_quote(executable), *(_cmd_quote(arg) for arg in args)])
+    return [comspec, "/d", "/s", "/c", f'"{inner}"']
+
+
 def _truncate(text: str, limit: int = 6000) -> str:
     """Keep tool payloads small enough for a prompt without hiding that they were cut."""
     if len(text) <= limit:
@@ -138,7 +180,13 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         # Resolve the harness once at startup so the first tool call is not
         # the thing that discovers a broken install.
         self._sdk_available = self._probe_sdk()
-        self._dsh_executable = self._resolve_dsh_executable()
+        # Read the runtime config, not just manifest metadata, so a value set in
+        # the host config actually reaches the resolver.
+        self._dsh_executable = self._resolve_dsh_executable(
+            dsh_executable=str(await self._cfg("dsh_executable", "")) or None,
+            repo_path=str(await self._cfg("repo_path", "")) or None,
+            dsh_install_path=str(await self._cfg("dsh_install_path", "")) or None,
+        )
 
         # Bootstrap the other direction: make sure the DSH side of the bridge
         # is installed, so starting this plugin is the only step a user needs.
@@ -169,8 +217,11 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
     async def dashboard(self):
         """面板状态：harness 可用性、当前配置摘要、最近运行记录。
 
-        只回传元数据（会话 ID、长度、耗时、模式），不回传任务正文或模型
-        回复——面板可能被围观，日志同理。
+        The panel deliberately shows each run's task text and model output so a
+        user can read what happened without leaving the plugin. That data is
+        held in memory only; the on-disk ``runs.jsonl`` log stays metadata-only
+        (session id, lengths, elapsed time, mode), which is what keeps a shared
+        log directory from accumulating prompts and answers.
         """
         # Newest first: the panel lists every task with its status, text and
         # output, and the most recent run is what a user looks for first.
@@ -253,7 +304,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         if not task or not task.strip():
             return Err(SdkError("任务不能为空"))
 
-        session = f"neko-{int(time.time())}"
+        session = _new_session_id()
         task_text = task.strip()
 
         try:
@@ -409,17 +460,25 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         (``no-dsh``, ``failed``).
         """
         try:
-            return await asyncio.to_thread(self._ensure_dsh_bridge_installed_sync)
+            install_path = str(await self._cfg("dsh_install_path", "")) or None
+            return await asyncio.to_thread(
+                self._ensure_dsh_bridge_installed_sync, install_path
+            )
         except Exception as exc:
             # A failure here must never stop the plugin from loading: the
             # N.E.K.O. -> DSH direction works without the DSH-side bundle.
             self.logger.warning("dsh bridge bootstrap failed: %s", exc)
             return "failed"
 
-    def _find_dsh_install(self) -> Path | None:
-        """Locate a DeepSeek Harness desktop installation."""
+    def _find_dsh_install(self, install_path: str | None = None) -> Path | None:
+        """Locate a DeepSeek Harness desktop installation.
+
+        ``install_path`` is the runtime-config value (``_cfg`` is async, this is
+        not); manifest metadata is the fallback so a config-less install still
+        resolves.
+        """
         # 1. Explicit config wins.
-        configured = self.metadata.get("dsh_install_path") if self.metadata else None
+        configured = install_path or (self.metadata.get("dsh_install_path") if self.metadata else None)
         if configured:
             candidate = Path(str(configured)).expanduser()
             if (candidate / "DeepSeek Harness.exe").exists():
@@ -507,9 +566,9 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
                 return candidate
         return None
 
-    def _ensure_dsh_bridge_installed_sync(self) -> str:
+    def _ensure_dsh_bridge_installed_sync(self, install_path: str | None = None) -> str:
         """Synchronous body of the DSH-side bootstrap."""
-        dsh = self._find_dsh_install()
+        dsh = self._find_dsh_install(install_path)
         if dsh is None:
             self._dsh_bridge_state = "no-dsh"
             self.logger.info("no DeepSeek Harness installation found; DSH-side bridge skipped")
@@ -702,9 +761,20 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         except (ImportError, ValueError):
             return False
 
-    def _resolve_dsh_executable(self) -> str | None:
-        """Find a usable ``dsh`` command, preferring the configured repo checkout."""
-        configured = self.metadata.get("dsh_executable") if self.metadata else None
+    def _resolve_dsh_executable(
+        self,
+        dsh_executable: str | None = None,
+        repo_path: str | None = None,
+        dsh_install_path: str | None = None,
+    ) -> str | None:
+        """Find a usable ``dsh`` command, preferring the configured repo checkout.
+
+        The caller passes the runtime-config values (``_cfg`` is async, this is
+        not); manifest metadata is the fallback so a config-less install still
+        resolves. Reading both from one place fixes the earlier split where
+        ``dsh_executable`` came from metadata but ``repo_path`` came from config.
+        """
+        configured = dsh_executable or (self.metadata.get("dsh_executable") if self.metadata else None)
         if configured:
             candidate = Path(str(configured)).expanduser()
             if candidate.exists():
@@ -716,7 +786,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             return found
 
         # A source checkout exposes dsh through pnpm; look for the repo root.
-        repo = self.metadata.get("repo_path") if self.metadata else None
+        repo = repo_path or (self.metadata.get("repo_path") if self.metadata else None)
         if repo:
             root = Path(str(repo)).expanduser()
             for candidate in (
@@ -729,7 +799,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         # The desktop app puts no `dsh` on PATH, but it ships a working CLI
         # inside its own asar. This is the common install, so check it before
         # giving up.
-        desktop = self._find_dsh_install()
+        desktop = self._find_dsh_install(dsh_install_path)
         if desktop is not None:
             exe = desktop / "DeepSeek Harness.exe"
             asar = desktop / "resources" / "app.asar"
@@ -777,7 +847,7 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         if not task or not task.strip():
             return Err(SdkError("task 不能为空"))
 
-        session = (session_id or "").strip() or f"neko-{int(time.time())}"
+        session = (session_id or "").strip() or _new_session_id()
         self.logger.info("dispatching harness task (session=%s, len=%d)", session, len(task))
 
         try:
@@ -848,13 +918,38 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
         profile = str(await self._cfg("profile", "headless"))
         timeout = float(await self._cfg("task_timeout", 600))
         repo = str(await self._cfg("repo_path", ""))
-        mode = "sdk" if self._sdk_available else "cli"
+        provider = str(await self._cfg("provider", "deepseek-account"))
+
+        # The SDK path pins the official API-key provider and applies neither
+        # the sandbox mode nor the reasoning effort — only the CLI's patch layer
+        # can re-enable the account stack. So an account-login install must use
+        # the CLI; the SDK is a fallback for when no CLI exists at all.
+        if self._sdk_available and (provider != "deepseek-account" or not self._dsh_executable):
+            mode = "sdk"
+        elif self._dsh_executable:
+            mode = "cli"
+        else:
+            mode = "cli" if not self._sdk_available else "sdk"
+
+        if mode == "sdk":
+            sandbox = str(await self._cfg("sandbox_mode", _DEFAULT_SANDBOX))
+            effort = str(await self._cfg("reasoning_effort", _DEFAULT_EFFORT))
+            if sandbox != _DEFAULT_SANDBOX or effort != _DEFAULT_EFFORT:
+                self._warn_once(
+                    "sdk-ignores-knobs",
+                    "Python SDK 路径不应用 sandbox/思考强度设置；要这些生效请用 CLI 路径",
+                )
 
         # The resolved values, not the manifest defaults: a runtime-config
         # override is invisible otherwise and profile is the one that decides
         # which CLI arguments are legal.
         self.logger.info(
-            "run %s: model=%s profile=%s mode=%s", session, model, profile, mode
+            "run %s: model=%s profile=%s mode=%s provider=%s",
+            session,
+            model,
+            profile,
+            mode,
+            provider,
         )
 
         record: dict[str, Any] = {
@@ -870,9 +965,10 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             "error": "",
         }
         self._runs[session] = record
+        self._evict_finished_runs()
 
         try:
-            if self._sdk_available:
+            if mode == "sdk":
                 result = await self._run_via_sdk(task, session, workspace, model, profile, repo, timeout)
             elif self._dsh_executable:
                 result = await self._run_via_cli(task, session, workspace, model, profile, self._dsh_executable, timeout)
@@ -900,6 +996,20 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
             "elapsed_seconds": record["elapsed_seconds"],
             "mode": mode,
         }
+
+    def _evict_finished_runs(self) -> None:
+        """Drop the oldest finished run records once the cap is exceeded.
+
+        In-flight runs are never evicted, so a long task cannot disappear from
+        the panel while it is still running.
+        """
+        if len(self._runs) <= _MAX_RUNS:
+            return
+        for key, record in list(self._runs.items()):
+            if len(self._runs) <= _MAX_RUNS:
+                break
+            if record.get("status") != "running":
+                del self._runs[key]
 
     async def _run_via_sdk(
         self,
@@ -988,6 +1098,12 @@ class DeepseekharnessBridgePlugin(NekoPluginBase):
 
         argv += ["--profile", profile]
         argv.append(task)
+
+        # A .cmd/.bat launcher re-parses the command line through cmd.exe, so an
+        # unquoted task containing & | < > ^ or % would be interpreted instead of
+        # passed through. Route batch launchers through a quoted cmd invocation.
+        if argv[0].lower().endswith(_BATCH_SUFFIXES):
+            argv = _batch_argv(argv[0], argv[1:])
 
         env = dict(os.environ)
         env.setdefault("DSH_WORKSPACE", str(workspace))

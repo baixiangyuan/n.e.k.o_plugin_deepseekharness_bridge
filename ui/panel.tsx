@@ -136,6 +136,11 @@ export default function Panel(props: PluginSurfaceProps<State>) {
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState("")
 
+  // Switching to danger-full-access lifts the sandbox boundary entirely, so it
+  // takes a deliberate second click. The armed flag expires so a stray click
+  // does not stay armed indefinitely.
+  const [dangerArmed, setDangerArmed] = useState(false)
+
   const submitTask = useCallback(async () => {
     const text = draft.trim()
     if (!text) return
@@ -295,13 +300,30 @@ export default function Panel(props: PluginSurfaceProps<State>) {
                     key={s.id}
                     tone={settings.sandbox_mode === s.id ? "primary" : "default"}
                     onClick={() => {
+                      const needsConfirm =
+                        s.id === "danger-full-access" &&
+                        settings.sandbox_mode !== s.id &&
+                        !dangerArmed
+                      if (needsConfirm) {
+                        setDangerArmed(true)
+                        setTimeout(() => setDangerArmed(false), 5000)
+                        return
+                      }
+                      setDangerArmed(false)
                       void props.api.call("panel_set_sandbox", { mode: s.id })
                     }}
                   >
-                    {s.name}
+                    {dangerArmed && s.id === "danger-full-access"
+                      ? t("再点一次确认")
+                      : s.name}
                   </Button>
                 ))}
               </ButtonGroup>
+              {dangerArmed ? (
+                <Alert tone="warning">
+                  {t("完全访问会解除全部文件限制，只在确信任务可信时使用。")}
+                </Alert>
+              ) : null}
               <Text>
                 {t("工作区目录：") + (settings.workspace || "—")}
               </Text>
@@ -311,13 +333,15 @@ export default function Panel(props: PluginSurfaceProps<State>) {
 
         <Card title={t("运行任务")}>
           <Stack gap={8}>
-            <Field label={t("任务内容")} help={t("写清楚目标和验收标准。")}>
+            <Stack gap={4}>
+              <Text>{t("任务内容")}</Text>
               <Textarea
                 value={draft}
                 placeholder={t("例如：总结当前工作区的结构")}
                 onChange={(next) => setDraft(next)}
               />
-            </Field>
+              <Text>{t("写清楚目标和验收标准。")}</Text>
+            </Stack>
             <Button
               tone="primary"
               disabled={submitting || !draft.trim()}
